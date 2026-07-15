@@ -214,5 +214,17 @@ def drive(
         typer.echo(f"champion: {res.champion_arm} score={res.champion_score:.4f} [{flag}]")
 
 
+@app.command()
+def talk(
+    provider: str = typer.Option("deepseek", "--provider", "-p", help="the fleet's default provider"),
+    model: str | None = typer.Option(None, "--model", "-m"),
+    watch: bool = typer.Option(True, "--watch/--no-watch", help="auto-launch the live Medium viewer"),
+) -> None:
+    """Talk to your fleet in plain English — say 'spin up N agents to do X'. No flags to memorize."""
+    from ..surfaces.commander import talk_loop
+
+    asyncio.run(talk_loop(_home(), provider, model or _default_model(provider), watch=watch))
+
+
 if __name__ == "__main__":
     app()

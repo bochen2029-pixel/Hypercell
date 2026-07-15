@@ -12,6 +12,10 @@ log_notes.md
 _intake/
 *.chunks/
 
+# --- session transcript exports (archive-viewer / distill dumps) — personal, not repo content ---
+*.distilled.md
+start_up_*.md
+
 # --- python ---
 __pycache__/
 *.py[cod]

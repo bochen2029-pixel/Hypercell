@@ -1,0 +1,8 @@
+# Minimal build context. The image (images/Dockerfile) only needs pyproject.toml,
+# README.md, and src/. Ignore everything else — keeps the context tiny and keeps
+# .env / .venv / .git / _intake out of the image.
+*
+!pyproject.toml
+!README.md
+!src
+!src/**
