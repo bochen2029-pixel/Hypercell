@@ -1,0 +1,34 @@
+{
+  "phase": "P1 - the Culture (tournament)",
+  "date": "2026-07-15",
+  "gate": { "pytest": "18 passed", "ruff": "clean", "mypy": "clean (38 files)" },
+  "built": [
+    "medium/transport_local.py + bus.py: local SQLite durable log (the stigmergic blackboard), post/submissions/replay",
+    "conductor/engine/converge.py: external oracle runner, coordinator-run, exit tri-state (0 pass / 1 gate / 2 INVALID-excluded)",
+    "conductor/engine/topology.py: run_tournament (fan-out N cells, per-round oracle scoring, champion, convergence, seeded diversity, cross-pollination over the Medium)",
+    "cell.produce(): candidate generation with peer cross-read + markdown-fence stripping",
+    "hc run / hc apply -f / hc replay"
+  ],
+  "falsifiers": {
+    "HC-3": {
+      "claim": "a tournament with an external oracle converges on an oracle-verified champion",
+      "result": "PASS",
+      "evidence": "test_tournament_converges_on_the_verified_candidate: a 3-cell tournament finds the SCORE=1.0 candidate and marks CONVERGED. LIVE: a real 4-cell DeepSeek tournament ran 3 rounds / 12 candidates, oracle-scored end to end."
+    },
+    "HC-4": {
+      "claim": "a seeded-diverse Culture beats an identical-N Culture",
+      "result": "PASS (deterministic)",
+      "evidence": "test_diversity_beats_identical: an identical roster (all the same buggy candidate) plateaus below target; a diverse roster (one correct candidate among them) reaches 1.0."
+    }
+  },
+  "live_finding": {
+    "run": "ipv4live - real DeepSeek, 4 diverse cells, 3 rounds, 12 candidates",
+    "champion_score": 0.9286,
+    "what_happened": "Every cell used str.isdigit() (one cell's own comment even said 'ASCII digits'), which returns True for U+0664 (Arabic-Indic digit four); int() then parses it, so is_valid('1.1.1.<U+0664>') wrongly returns True. The external oracle caught the 1/14 miss the whole swarm shared and were confident about.",
+    "lesson": "Temperature/angle diversity WITHIN one provider family shares a blind spot, so 3 rounds of cross-pollination could not repair it. HC-4 sharpened: real diversity needs DIFFERENT PROVIDER FAMILIES. Only DEEPSEEK_API_KEY was present; add a second family (cerebras/glm/...) and one cell likely uses isascii() and wins. The oracle is the keystone precisely because the swarm cannot see its own shared gap."
+  },
+  "not_yet_needs_operator": [
+    "a second provider key (cerebras/glm/kimi/qwen/grok/openai) to break the shared blind spot and let HC-3 'beat a single cell' show live on a hard case",
+    "hc top live view + culture-level hc resume (land with P2 async/background runs)"
+  ]
+}

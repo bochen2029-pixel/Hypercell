@@ -253,7 +253,7 @@ done here.
 ## §B13 · Escalations & status (living section — the implementing session edits this)
 
 - [x] **P0** p0.1 · p0.2 · p0.3 · p0.4 · p0.5 · p0.6 (image + manifests scaffolded; on-cluster deploy pending operator's k3s) · p0.7 (drill green: mock + LIVE deepseek; crash→resume→exactly-once). Gate: pytest 13✓ ruff✓ mypy✓. Artifact: `bench/.hypercellstate/p0-stem.json`. **HC-1/HC-2/HC-6 met.**
-- [ ] **P1** p1.1 · p1.2 · p1.3 · p1.4 · p1.5
+- [x] **P1** p1.1 (Medium/local log) · p1.2 (oracle runner, tri-state) · p1.3 (tournament + seeded diversity + cross-pollination) · p1.4 (`hc replay` transcript; `hc top` live view → P2) · p1.5 (culture-level resume → P2 async). Gate 18✓. **HC-3/HC-4 met (tests); LIVE DeepSeek tournament ran end-to-end, oracle caught a shared blind spot @0.9286** (see `bench/.hypercellstate/p1-culture.json`). CLI: `hc run` / `hc apply -f` / `hc replay`.
 - [ ] **P2** p2.1 · p2.2 · p2.3 · p2.4 · p2.5
 - [ ] **P3** p3.1 · p3.2 · p3.3 · p3.4    · [ ] **P4** (HC-9)    · [ ] **P5** (HC-10)
 - Escalations: *(none yet)*
