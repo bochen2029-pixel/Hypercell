@@ -32,10 +32,16 @@ def test_claim_id_is_stable() -> None:
 
 
 def test_ulid_and_short_id() -> None:
+    import time
+
     a, b = ids.new_id(), ids.new_id()
-    assert len(a) == 26 and a != b
-    assert a < b  # ULIDs are time-sortable
+    assert len(a) == 26 and len(b) == 26 and a != b
     assert len(ids.short_id()) == 8
+    # ULIDs are time-sortable ACROSS milliseconds (same-ms order is by the random suffix).
+    early = ids.new_id()
+    time.sleep(0.003)
+    late = ids.new_id()
+    assert early < late
 
 
 def test_run_manifest_defaults() -> None:

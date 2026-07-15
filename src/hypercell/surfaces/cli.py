@@ -20,6 +20,14 @@ from ..common.types import ProviderConfig
 app = typer.Typer(no_args_is_help=True, add_completion=False, help="hypercell — command a fleet of AI cells.")
 
 
+@app.callback()
+def _bootstrap() -> None:
+    """Load .env (provider keys) before any command; existing env vars win."""
+    from ..common.config import load_env
+
+    load_env()
+
+
 def _home() -> str:
     return os.environ.get("HYPERCELL_HOME", str(Path(".hypercellstate")))
 

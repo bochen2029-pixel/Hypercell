@@ -15,7 +15,10 @@ from fastapi import FastAPI
 from pydantic import BaseModel
 
 from ..cell.runtime import build_cell, load_role
+from ..common.config import load_env
 from ..common.types import ProviderConfig
+
+load_env()  # keys from .env before the conductor serves
 
 app = FastAPI(title="hypercell conductor", version="0.1.0")
 
