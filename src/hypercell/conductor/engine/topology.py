@@ -11,12 +11,15 @@ from pathlib import Path
 from typing import Any
 
 from ...cell.runtime import Cell, build_cell
+from ...cognition.base import Cognition
+from ...cognition.registry import build_cognition
 from ...common import ids
 from ...common.types import Outcome, ProviderConfig, Role
 from ...medium.bus import open_medium
 from ...medium.transport_local import LocalMedium
 from ..governor import BudgetExceeded, Governor, MeteredCognition
 from .converge import run_oracle
+from .judge import judge_score
 
 
 @dataclass
@@ -75,6 +78,7 @@ async def _produce_and_score(
     oracle_cmd: str,
     medium: LocalMedium,
     culture: str,
+    judge_ctx: tuple[Cognition, int] | None = None,
 ) -> Candidate:
     try:
         code = await cell.produce(goal, peers)
@@ -82,13 +86,21 @@ async def _produce_and_score(
         return Candidate(cell=cell.role.name, round=rnd, path="", score=0.0, outcome=Outcome.invalid)
     rdir = sandbox / f"r{rnd}"
     rdir.mkdir(parents=True, exist_ok=True)
-    path = rdir / f"{cell.role.name}.py"
+    path = rdir / f"{cell.role.name}.{'md' if judge_ctx else 'py'}"
     path.write_text(code, encoding="utf-8")
     medium.post(
         culture, cell.role.name, "submission", round=rnd, body={"code": code},
         artifact={"path": str(path)},
     )
-    receipt = run_oracle(oracle_cmd, str(path))
+    if judge_ctx is not None:  # open task: an independent judge panel scores it (Externality for prose)
+        jcog, judges = judge_ctx
+        receipt = await judge_score(jcog, goal=goal, candidate_text=code, judges=judges)
+        medium.post(
+            culture, "judges", "judgment", round=rnd,
+            body={"for": cell.role.name, "score": receipt.score, "evidence": receipt.evidence},
+        )
+    else:  # checkable task: the external oracle command scores it
+        receipt = run_oracle(oracle_cmd, str(path))
     return Candidate(
         cell=cell.role.name, round=rnd, path=str(path), score=receipt.score, outcome=receipt.outcome
     )
@@ -98,7 +110,7 @@ async def run_tournament(
     *,
     run_id: str,
     goal: str,
-    oracle_cmd: str,
+    oracle_cmd: str = "",
     home: str,
     provider: str,
     model: str,
@@ -110,16 +122,30 @@ async def run_tournament(
     base_prompt: str | None = None,
     cells: list[Cell] | None = None,
     governor: Governor | None = None,
+    judge: int = 0,
 ) -> TournamentResult:
-    """Run a tournament. `cells` may be supplied (tests inject stub-cognition cells); else built here."""
+    """Run a tournament. Scoring is an external oracle command, or (judge>0) an independent
+    judge panel for open/prose tasks. `cells` may be supplied (tests inject stub cells)."""
+    is_judge = judge > 0
     base_prompt = base_prompt or (
-        "You are a cell in a swarm solving a shared goal. Produce ONE solution artifact. "
-        "Output ONLY the artifact (for code: the source), with no prose and no markdown fences."
+        (
+            "You are a cell in a swarm answering a shared goal. Produce your single best answer. "
+            "Output ONLY the answer, direct and self-contained, with no preamble."
+        )
+        if is_judge
+        else (
+            "You are a cell in a swarm solving a shared goal. Produce ONE solution artifact. "
+            "Output ONLY the artifact (for code: the source), with no prose and no markdown fences."
+        )
     )
     culture = f"run-{run_id}"
     medium = open_medium(home)
     sandbox = Path(home) / "_sandbox" / run_id
     sandbox.mkdir(parents=True, exist_ok=True)
+
+    judge_ctx: tuple[Cognition, int] | None = None
+    if is_judge:
+        judge_ctx = (build_cognition(ProviderConfig(provider=provider, model=model)), judge)
 
     if cells is None:
         roles = _roster(n, provider, model, base_prompt, diversify)
@@ -148,7 +174,7 @@ async def run_tournament(
         cands: list[Candidate] = list(
             await asyncio.gather(
                 *(
-                    _produce_and_score(c, goal, peers, sandbox, rnd, oracle_cmd, medium, culture)
+                    _produce_and_score(c, goal, peers, sandbox, rnd, oracle_cmd, medium, culture, judge_ctx)
                     for c in cells
                 )
             )

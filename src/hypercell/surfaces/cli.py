@@ -104,7 +104,8 @@ def _default_model(provider: str) -> str:
 def run(
     topology: str = typer.Argument("tournament", help="tournament (P1)"),
     goal: str = typer.Option(..., "--goal", "-g", help="the shared goal"),
-    oracle: str = typer.Option(..., "--oracle", help="external falsifier cmd, e.g. 'python oracles/ipv4_check.py'"),
+    oracle: str = typer.Option("", "--oracle", help="checker cmd for CHECKABLE tasks (else use --judge N)"),
+    judge: int = typer.Option(0, "--judge", help="judge-panel size for OPEN tasks (0 = require --oracle)"),
     n: int = typer.Option(4, "--n", help="number of cells"),
     rounds: int = typer.Option(3, "--rounds"),
     provider: str = typer.Option("deepseek", "--provider", "-p"),
@@ -118,17 +119,23 @@ def run(
     if topology != "tournament":
         typer.echo(f"topology '{topology}' is not implemented yet (P1 = tournament).")
         raise typer.Exit(2)
+    if not oracle and judge <= 0:
+        typer.echo("give a scorer: --oracle '<cmd>' for checkable tasks, or --judge N for open tasks.")
+        raise typer.Exit(2)
+    if judge > 0 and target >= 1.0:
+        target = 0.9  # judges rarely give a perfect 10; converge at a strong-consensus bar
     rid = run_id or ids.short_id(6)
     res = asyncio.run(
         run_tournament(
             run_id=rid, goal=goal, oracle_cmd=oracle, home=_home(),
             provider=provider, model=model or _default_model(provider),
-            n=n, rounds=rounds, target=target, diversify=diversify,
+            n=n, rounds=rounds, target=target, diversify=diversify, judge=judge,
         )
     )
     typer.echo(
         f"run {rid}: {res.rounds_run} rounds, {len(res.history)} candidates, "
         f"{'diverse' if diversify else 'identical'} roster of {n}"
+        + (f", judged by a panel of {judge}" if judge else "")
     )
     if res.champion is not None:
         flag = "CONVERGED" if res.converged else "best-so-far"

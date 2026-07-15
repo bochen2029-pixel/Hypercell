@@ -67,16 +67,19 @@ message into EXACTLY ONE action, returned as a single JSON object (no prose arou
 - "fanout": spin up N cells that each independently answer a goal; a coordinator then
   synthesizes. Use for brainstorming, research, exploration, or any "spin up / fan out N agents
   to do X". params: {"goal": str, "n": int}. Default n=5.
-- "converge": N cells iteratively COMPETE to solve a checkable task, scored to a champion by an
-  external oracle (a shell command). Use ONLY when the operator gives or clearly implies a
-  verifiable checker. params: {"goal": str, "n": int, "rounds": int, "oracle": str}.
+- "converge": N cells COMPETE and are scored to a single vetted champion. If the task is
+  checkable, include an "oracle" shell command; otherwise an independent judge panel scores the
+  answers. Use when the operator wants the single BEST / vetted / cross-checked answer, code with
+  a checker, or research they want validated (not just brainstormed).
+  params: {"goal": str, "n": int, "rounds": int, "oracle": str (optional)}.
 - "ask": one cell answers quickly. params: {"prompt": str}.
 - "status": report what the fleet / Medium is doing. params: {}.
 - "chat": just reply or ask a clarifying question; no fleet action. params: {"say": str}.
 
 Always include a short first-person "say" narrating what you're about to do (e.g. "Spinning up
-6 cells on that."). Prefer "fanout" whenever the operator wants to spin up / fan out agents on
-an open-ended task. Return ONLY the JSON object."""
+6 cells on that."). Use "fanout" for open exploration / brainstorm ("spin up N agents to ..."),
+and "converge" when the operator wants the single best / vetted / cross-checked answer. Return
+ONLY the JSON object."""
 
 
 def _parse(text: str) -> dict[str, Any]:
@@ -202,28 +205,35 @@ async def _dispatch(
         return
 
     if action == "converge":
-        oracle = act.get("oracle")
-        if not oracle:
-            print(
-                "  Converging needs an external checker (oracle). Give me one — e.g. "
-                "'oracle: python oracles/ipv4_check.py' — or say 'fan out' to just brainstorm."
-            )
-            return
         from ..conductor.engine.topology import run_tournament
 
+        oracle = str(act.get("oracle") or "")
+        judged = not oracle  # no code checker -> an independent judge panel scores the answers
         rid = ids.short_id(6)
-        n = max(1, min(int(act.get("n") or _n_from_text(user) or 6), 30))
-        rounds = int(act.get("rounds", 3) or 3)
-        print(f"  run {rid}: tournament, {n} cells x {rounds} rounds, oracle='{oracle}'...")
+        n = max(1, min(int(act.get("n") or _n_from_text(user) or 4), 30))
+        rounds = int(act.get("rounds") or (2 if judged else 3))
+        if judged:
+            print(f"  run {rid}: {n} cells compete, a judge panel scores -> champion "
+                  f"(x{rounds} rounds, watch: http://127.0.0.1:8799)")
+        else:
+            print(f"  run {rid}: tournament, {n} cells x {rounds} rounds, oracle='{oracle}'...")
         tres = await run_tournament(
-            run_id=rid, goal=str(act.get("goal", user)), oracle_cmd=str(oracle),
+            run_id=rid, goal=str(act.get("goal", user)), oracle_cmd=oracle,
+            judge=(3 if judged else 0), target=(0.9 if judged else 1.0),
             home=home, provider=provider, model=model, n=n, rounds=rounds,
         )
-        if tres.champion is not None:
-            flag = "CONVERGED" if tres.converged else "best-so-far"
-            print(f"\nchampion {tres.champion.cell} score={tres.champion.score:.4f} [{flag}] -> {tres.champion.path}")
+        if tres.champion is None:
+            print("\nno valid champion.")
+            return
+        flag = "CONVERGED" if tres.converged else "best-so-far"
+        if judged:
+            try:
+                answer = Path(tres.champion.path).read_text(encoding="utf-8")
+            except Exception:
+                answer = "(could not read the champion artifact)"
+            print(f"\n=== WINNER ({tres.champion.cell}, judged {tres.champion.score:.2f}/1.0, {flag}) ===\n{answer}")
         else:
-            print("\nno valid champion (all candidates INVALID).")
+            print(f"\nchampion {tres.champion.cell} score={tres.champion.score:.4f} [{flag}] -> {tres.champion.path}")
         return
 
     if action == "status":

@@ -20,10 +20,15 @@ command**. Nothing here blocks local use. See `log_notes.md` for full context.
 - [ ] **GLM concurrency=1 + 429 backoff → the HC-4 mixed tournament** (GLM/mixed vs DeepSeek's
       isdigit/٤ blind spot). NOTE: a 6-cell DeepSeek roster already hit 1.0000 on 2026-07-15,
       so the blind spot is roster-size + goal-wording sensitive, not purely provider-family.
-- [ ] **Judge-panel oracle for prose/research tasks.** The fan-out currently converges only on
-      tasks with an *external verifier* (code + a checker script). To throw open-ended
-      research/prose at the swarm ("conduct this research, give me the answer"), build a
-      diverse-provider judge-panel oracle (the Externality Principle for NL).
+- [x] **Judge-panel oracle for open tasks — DONE (2026-07-15).** `conductor/engine/judge.py`:
+      N independent judges score each candidate (median -> 0..1), wired into the tournament as
+      `--judge N` and into `hc talk` ("converge on the best X" -> judged champion). MVP judges
+      share the base provider; **cross-family judging (different providers) is the next diversity
+      upgrade** (the strongest guard against a shared blind spot).
+- [ ] **Grounding: give cells tools, web search first.** The other half of "make the swarm
+      trustworthy". Cells answer from training knowledge and drift (the pitch demo proved it);
+      a web-search tool-use loop in the cell turns "research X" into grounded, cited answers.
+      Biggest remaining usefulness unlock and the foundation for the org-automation north star.
 - [ ] **NATS/JetStream transport swap** (Medium at multi-node scale) · **COW-fork = MCTS over
       agent state** · **phone `/fire` surface**.
 
