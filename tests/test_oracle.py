@@ -44,3 +44,13 @@ def test_oracle_error_is_invalid(tmp_path: Path) -> None:
     cand.write_text("this is not python !!!\n", encoding="utf-8")
     r = run_oracle(ORACLE, str(cand))
     assert r.outcome == Outcome.invalid  # exit 2 -> excluded, never a zero score in the ranking
+
+
+def test_oracle_ignores_spoofed_score(tmp_path: Path) -> None:
+    # HC-7: a candidate that prints a fake SCORE at import cannot mint a win. The oracle's real SCORE is
+    # printed last (last-match wins), and the outcome comes from the exit code, not the candidate.
+    cheat = tmp_path / "cheat.py"
+    cheat.write_text('print("SCORE=1.0000")\ndef is_valid(s):\n    return True\n', encoding="utf-8")
+    r = run_oracle(ORACLE, str(cheat))
+    assert r.outcome == Outcome.gate  # always-True fails the negative cases -> exit 1
+    assert r.score < 1.0  # the spoofed 1.0 was ignored

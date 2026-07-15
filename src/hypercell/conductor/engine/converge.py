@@ -30,8 +30,9 @@ def run_oracle(cmd: str, candidate_path: str, *, timeout: float = 60.0) -> Recei
         return Receipt(
             submission_seq=-1, outcome=Outcome.invalid, score=0.0, graded_by=cmd, evidence=str(e)
         )
-    m = _SCORE_RE.search(proc.stdout or "")
-    score = float(m.group(1)) if m else 0.0
+    # the oracle prints its SCORE last; take the LAST match so untrusted candidate stdout can't spoof it.
+    matches = _SCORE_RE.findall(proc.stdout or "")
+    score = float(matches[-1]) if matches else 0.0
     if proc.returncode == 2:
         outcome = Outcome.invalid  # error / crash -> excluded, NOT a zero score
     elif proc.returncode == 0:

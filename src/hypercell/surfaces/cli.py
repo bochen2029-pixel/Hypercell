@@ -175,5 +175,36 @@ def replay(run: str = typer.Option(..., "--run", help="the run id to replay")) -
     med.close()
 
 
+@app.command()
+def drive(
+    goal: str = typer.Option(..., "--goal", "-g", help="the shared goal"),
+    oracle: str = typer.Option(..., "--oracle", help="external falsifier cmd"),
+    arms: int = typer.Option(4, "--arms", help="number of approaches (cells)"),
+    max_steps: int = typer.Option(12, "--max-steps"),
+    provider: str = typer.Option("deepseek", "--provider", "-p"),
+    model: str | None = typer.Option(None, "--model", "-m"),
+    usd_cap: float = typer.Option(1.0, "--usd-cap", help="budget hard-stop (HC-8)"),
+    run_id: str | None = typer.Option(None, "--run"),
+    target: float = typer.Option(1.0, "--target"),
+) -> None:
+    """The self-driving machine: UCB-scheduled, budget-bounded convergence."""
+    from ..conductor.engine.drive import run_drive
+
+    rid = run_id or ids.short_id(6)
+    res = asyncio.run(
+        run_drive(
+            run_id=rid, goal=goal, oracle_cmd=oracle, home=_home(),
+            provider=provider, model=model or _default_model(provider),
+            n_arms=arms, max_steps=max_steps, usd_cap=usd_cap, target=target,
+        )
+    )
+    typer.echo(
+        f"drive {rid}: {res.steps} steps, spent ${res.spent_usd:.4f}, stopped={res.stopped_reason}"
+    )
+    if res.champion_arm is not None:
+        flag = "CONVERGED" if res.converged else "best-so-far"
+        typer.echo(f"champion: {res.champion_arm} score={res.champion_score:.4f} [{flag}]")
+
+
 if __name__ == "__main__":
     app()

@@ -15,6 +15,7 @@ from ...common import ids
 from ...common.types import Outcome, ProviderConfig, Role
 from ...medium.bus import open_medium
 from ...medium.transport_local import LocalMedium
+from ..governor import BudgetExceeded, Governor, MeteredCognition
 from .converge import run_oracle
 
 
@@ -75,7 +76,10 @@ async def _produce_and_score(
     medium: LocalMedium,
     culture: str,
 ) -> Candidate:
-    code = await cell.produce(goal, peers)
+    try:
+        code = await cell.produce(goal, peers)
+    except BudgetExceeded:
+        return Candidate(cell=cell.role.name, round=rnd, path="", score=0.0, outcome=Outcome.invalid)
     rdir = sandbox / f"r{rnd}"
     rdir.mkdir(parents=True, exist_ok=True)
     path = rdir / f"{cell.role.name}.py"
@@ -105,6 +109,7 @@ async def run_tournament(
     diversify: bool = True,
     base_prompt: str | None = None,
     cells: list[Cell] | None = None,
+    governor: Governor | None = None,
 ) -> TournamentResult:
     """Run a tournament. `cells` may be supplied (tests inject stub-cognition cells); else built here."""
     base_prompt = base_prompt or (
@@ -119,6 +124,9 @@ async def run_tournament(
     if cells is None:
         roles = _roster(n, provider, model, base_prompt, diversify)
         cells = [build_cell(home, ids.claim_id(run_id, r.name, 0), r) for r in roles]
+    if governor is not None:
+        for c in cells:
+            c.cognition = MeteredCognition(c.cognition, c.role.provider.provider, governor)
 
     medium.post(culture, "conductor", "round_open", body={"goal": goal}, round=1)
 
@@ -147,14 +155,19 @@ async def run_tournament(
         )
         history.extend(cands)
         valid = [c for c in cands if c.outcome != Outcome.invalid]  # INVALID excluded (tri-state)
-        round_best = max(valid, key=lambda c: c.score, default=None)
-        prev_score = champion.score if champion else -1.0
-        if round_best is not None and round_best.score > prev_score:
+        round_best = max(valid, key=lambda c: (c.outcome == Outcome.passed, c.score), default=None)
+        prev = (champion.outcome == Outcome.passed, champion.score) if champion else (False, -1.0)
+        if round_best is not None and (round_best.outcome == Outcome.passed, round_best.score) > prev:
             champion = round_best
             stable = 0
         else:
             stable += 1
-        if champion is not None and champion.score >= target and stable >= stable_k:
+        if (
+            champion is not None
+            and champion.outcome == Outcome.passed  # outcome is authoritative (exit-code, HC-7)
+            and champion.score >= target
+            and stable >= stable_k
+        ):
             converged = True
             medium.post(
                 culture, "conductor", "verdict",
