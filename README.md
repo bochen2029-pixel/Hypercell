@@ -15,3 +15,61 @@ Take the same fabric into an organization and it stops being a personal tool and
 The far edge of this is the most speculative part and, to me, the most interesting. I do not want to hand-tune every connection and every handoff forever. I would rather build the ground a swarm can stand on and let it work out the rest. Give it a goal, give it an honest way to tell whether it is getting closer, seed it with enough variety that it does not collapse into one opinion, and let the coordination emerge the way it does in an ant colony, where no single ant holds the plan and yet the structure gets built. Cells that have deepened all the way into full reasoning systems, each closing its own loop and checking its own work, are the ones I would trust to run without a human standing over them. When that begins to happen, the system starts closing its own loop, using intelligence to supply the parts of intelligence it still lacks. That is the wager at the end of the road, the one the terms AGI and ASI are pointing at: use AI to solve AI, and find out how far a fabric of cooperating cells can carry itself.
 
 So here is the arc, stated plainly. It began as a way to stop being the copy-and-paste messenger between my own sessions. It turned into a sovereign personal AI, then into a method for compressing the cognitive labor of an entire organization, and finally into a serious attempt at the self-improving, self-organizing intelligence that people have in mind when they talk about AGI. The same small idea at every scale, only larger each time. hypercell is the name I am giving the whole of it for now, and if something one day grows large enough to contain even this, it will have started here, as a single cell that could become anything.
+
+---
+
+## Running it
+
+hypercell runs today on Python 3.12. The fastest way in is to talk to it:
+
+```
+git clone https://github.com/bochen2029-pixel/Hypercell
+cd Hypercell
+uv venv && uv pip install -e ".[dev]"
+cp .env.example .env          # then add one provider key, e.g. DEEPSEEK_API_KEY
+
+hc talk                        # then just say: "spin up 6 agents to research X"
+```
+
+`hc talk` is the natural-language commander. You describe what you want, a router model
+turns it into a fleet action, runs it, and reports back. To watch the swarm coordinate
+live, open the Medium viewer (a read-only dashboard over the shared coordination log):
+
+```
+python tools/medium_viewer.py       # http://127.0.0.1:8799
+```
+
+Or drive it directly, no natural language:
+
+```
+hc run tournament --provider deepseek --n 6 --goal "..." --oracle "python oracles/ipv4_check.py"
+hc drive --provider deepseek --goal "..." --oracle "..." --usd-cap 0.05
+hc ask   --provider deepseek "..."          # a single cell
+hc resume --claim run/role/0                # wake a crashed cell from its nucleus
+```
+
+Swap the model by config, never by code: `--provider deepseek|cerebras|glm|kimi|qwen|grok|openai`,
+with keys in `.env`. It is built to run the same in a container or on k3s (`images/Dockerfile`,
+`deploy/`).
+
+## What is here
+
+- `HYPERCELL_ARCHITECTURE.md` is the constitution: the axioms, the grammar, the L0 to L4
+  stack, the depth dial, the external-oracle discipline, and the falsifiers.
+- `HYPERCELL_BUILD.md` is the build runbook (P0 through P5, each rung falsifier-gated).
+- `contracts/` holds the frozen wire, nucleus, role, run, and oracle contracts.
+- `src/hypercell/` is the fabric: cells, the swappable cognition seam, the Medium, the
+  conductor (tournament, drive, router, schedule, fanout), and the surfaces (CLI, HTTP
+  API, MCP, and `hc talk`).
+- `tools/medium_viewer.py` is a live dashboard over the Medium.
+
+## Status
+
+Early and honest. P0 (a commandable, provider-swappable, resumable cell), P1 (the
+tournament Culture that converges against an external oracle), and P2 (the self-driving
+loop with a cost governor) are built and live-tested; the conductor also runs on-cluster
+on k3s. This is a working stem, not a finished product. `TODO.md` lists what is parked.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
