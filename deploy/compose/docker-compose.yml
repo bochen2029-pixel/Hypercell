@@ -1,0 +1,20 @@
+# hypercell local-lite: the zero-cluster local start (podman/docker compose).
+# k3s is the default substrate target (see ../k3s/); this is for the fastest first run on one box.
+services:
+  conductor:
+    build:
+      context: ../..
+      dockerfile: images/Dockerfile
+    environment:
+      HYPERCELL_ROLE: conductor
+      HYPERCELL_API_HOST: 0.0.0.0
+      HYPERCELL_API_PORT: "8787"
+    env_file:
+      - ../../.env
+    ports:
+      - "8787:8787"
+    volumes:
+      - hypercell-state:/var/lib/hypercell
+
+volumes:
+  hypercell-state:

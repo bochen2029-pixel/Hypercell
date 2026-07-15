@@ -1,0 +1,45 @@
+# --- secrets (never commit) ---
+.env
+.env.*
+!.env.example
+*.key
+secrets.*.yaml
+
+# --- the operator/agent working log (local notebook, not repo content) ---
+log_notes.md
+
+# --- raw intake material (voice transcripts, chunked working copies) — personal, not repo content ---
+_intake/
+*.chunks/
+
+# --- python ---
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+build/
+dist/
+*.egg-info/
+
+# --- runtime state (nuclei, ledgers, indexes are per-run data, not source) ---
+.hypercellstate/**
+!bench/.hypercellstate/          # falsifier DECISION artifacts are committed
+!bench/.hypercellstate/.gitkeep
+nuclei/
+*.db
+*.db-wal
+*.db-shm
+*.ledger.jsonl
+runs/
+
+# --- lockfile for the swap-substrate is generated ---
+hypercell.lock.local
+
+# --- os / editor ---
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

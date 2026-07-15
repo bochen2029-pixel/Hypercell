@@ -1,0 +1,23 @@
+# A tournament: 4 diverse cells converge on a verified IPv4 validator. (contracts/run.md)
+# hc apply -f examples/ipv4.run.yaml
+run_id: ipv4-r1
+goal: |
+  Implement `is_valid(s: str) -> bool` for IPv4 dotted-quad addresses in Python, in a file the oracle can
+  import. Reject leading zeros, out-of-range octets, wrong field counts, and non-ASCII digits. A hidden
+  test battery scores you.
+topology: tournament
+roster:
+  - { role: examples/refiner.role.yaml, count: 4, diversify: true }
+oracle:
+  mode: target
+  cmd: "python oracles/ipv4_check.py"
+  target: 1.0
+  tolerance: 0.0
+budget:
+  usd_cap: 0.50
+  per_provider_concurrency: { deepseek: 4 }
+termination:
+  max_rounds: 3
+  stable_k: 2
+seed_diversity: true
+isolate: false

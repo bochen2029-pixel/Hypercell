@@ -1,0 +1,53 @@
+[project]
+name = "hypercell"
+version = "0.1.0"
+description = "A sovereign, depth-invariant swarm-compute fabric — from one commanded cell to a self-organizing fleet."
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "TBD (operator's call)" }
+authors = [{ name = "Bo Chen" }]
+keywords = ["agents", "swarm", "orchestration", "kubernetes", "llm", "sovereign"]
+
+dependencies = [
+    "pydantic>=2.7",
+    "typer>=0.12",
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.29",
+    "httpx>=0.27",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+# Rented organs / transports / surfaces — installed on demand, never a P0 requirement.
+providers = ["openai>=1.30", "anthropic>=0.30"]   # thin adapters behind the Cognition seam
+nats = ["nats-py>=2.6"]                            # P3 Medium transport
+mcp = ["mcp>=1.0"]                                 # P2 MCP surface
+dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "ruff>=0.4", "mypy>=1.10"]
+
+[project.scripts]
+hc = "hypercell.surfaces.cli:app"          # the fleet-commander CLI
+hcd = "hypercell.conductor.daemon:main"    # the control-plane daemon
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/hypercell"]
+
+[tool.ruff]
+line-length = 100
+src = ["src"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+packages = ["hypercell"]
+mypy_path = "src"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

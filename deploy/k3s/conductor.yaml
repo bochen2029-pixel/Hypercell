@@ -1,0 +1,60 @@
+# hypercell on k3s — the conductor + its state PVC + a service. The default substrate target.
+# Build the image and import it into k3s:  docker build -t hypercell:local -f images/Dockerfile .
+#   then:  docker save hypercell:local | sudo k3s ctr images import -   (or push to a registry)
+# Provider keys:  kubectl -n hypercell create secret generic hypercell-providers --from-env-file=.env
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: hypercell
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: conductor-state
+  namespace: hypercell
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: conductor
+  namespace: hypercell
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: conductor }
+  template:
+    metadata:
+      labels: { app: conductor }
+    spec:
+      containers:
+        - name: conductor
+          image: hypercell:local
+          imagePullPolicy: IfNotPresent
+          env:
+            - { name: HYPERCELL_ROLE, value: conductor }
+            - { name: HYPERCELL_API_HOST, value: "0.0.0.0" }
+            - { name: HYPERCELL_API_PORT, value: "8787" }
+          envFrom:
+            - secretRef: { name: hypercell-providers }
+          ports:
+            - containerPort: 8787
+          volumeMounts:
+            - { name: state, mountPath: /var/lib/hypercell }
+      volumes:
+        - name: state
+          persistentVolumeClaim: { claimName: conductor-state }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: conductor
+  namespace: hypercell
+spec:
+  selector: { app: conductor }
+  ports:
+    - { port: 8787, targetPort: 8787 }

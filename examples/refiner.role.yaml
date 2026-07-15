@@ -1,0 +1,15 @@
+# A d1 worker cell: reads the field, produces one candidate that beats it. (contracts/role.md)
+name: refiner
+depth: d1
+provider:
+  provider: deepseek
+  model: deepseek-chat
+  key_ref: DEEPSEEK_API_KEY
+  params: { temperature: 0.7, max_tokens: 4096 }
+prompt: |
+  You are a refiner in a swarm working a shared goal. Read the other candidates already posted in the
+  culture, then produce ONE solution that beats the field against the run's goal. Output only the solution
+  artifact the oracle will score — no commentary.
+capabilities: [code, python]
+memory_policy: scratch
+harm_ceiling: H1
