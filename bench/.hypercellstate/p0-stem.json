@@ -1,0 +1,27 @@
+{
+  "phase": "P0 - the stem",
+  "date": "2026-07-15",
+  "gate": { "pytest": "13 passed", "ruff": "clean", "mypy": "clean (38 files)" },
+  "falsifiers": {
+    "HC-1": {
+      "claim": "a single cell takes a prompt, calls a config-selected provider, returns an answer",
+      "result": "PASS",
+      "evidence": "hc ask --provider mock -> answer; hc ask --provider deepseek 'hi' -> LIVE DeepSeek reply 'Hello! How can I help you today?'"
+    },
+    "HC-2": {
+      "claim": "kill a cell mid-run; a fresh instance resumes from the nucleus via the stable claim-id; zero double-execution",
+      "result": "PASS",
+      "evidence": "hc ask crashed after the pending checkpoint (exit 1); hc resume completed the act from the ledger; a second hc resume found nothing pending (exactly-once). Worker ledger: percept->action->checkpoint->[crash]->percept->action->checkpoint->outcome->checkpoint. Unit test test_crash_then_resume asserts cognition.calls==1 across the resume."
+    },
+    "HC-6": {
+      "claim": "swap the provider by config, no code change; a Culture can be heterogeneous",
+      "result": "PASS (real, with the one keyed provider)",
+      "evidence": "one code path resolves mock|echo|deepseek|cerebras|glm|kimi|qwen|grok|openai purely from --provider; the deepseek path made a live successful call; the others resolve identically and only need a key. Keys present at run time: DEEPSEEK_API_KEY only."
+    }
+  },
+  "not_yet_needs_operator": [
+    "real cerebras/glm/kimi/qwen/grok/openai swap (add the key to .env or env)",
+    "k3s deploy of the conductor image so HC-1 runs on-cluster (build image + import + kubectl apply deploy/k3s/conductor.yaml)"
+  ],
+  "notes": "Offline mock/echo provider added as the island floor + test double. Nucleus = append-only JSONL ledger (truth) + SQLite index (rebuilt from the ledger on open). Resume is reconstruction + idempotency keys, not deterministic replay."
+}

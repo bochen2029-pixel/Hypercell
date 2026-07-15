@@ -9,6 +9,7 @@ import os
 
 from ..common.types import ProviderConfig
 from .base import Cognition
+from .mock import MockCognition
 from .openai_compat import OpenAICompatCognition
 
 # OpenAI-compatible endpoints. Override per role with provider.base_url when a region/edition differs.
@@ -36,6 +37,8 @@ def _resolve_key(cfg: ProviderConfig) -> str:
 
 def build_cognition(cfg: ProviderConfig) -> Cognition:
     provider = cfg.provider.lower()
+    if provider in ("mock", "echo"):
+        return MockCognition(model=cfg.model)
     if provider in ("anthropic", "gemini"):
         raise NotImplementedError(
             f"provider '{provider}' needs its thin native adapter (P0.2 TODO); "

@@ -36,7 +36,7 @@ build-backend = "hatchling.build"
 packages = ["src/hypercell"]
 
 [tool.ruff]
-line-length = 100
+line-length = 120
 src = ["src"]
 
 [tool.ruff.lint]
@@ -47,6 +47,10 @@ python_version = "3.12"
 strict = true
 packages = ["hypercell"]
 mypy_path = "src"
+
+[[tool.mypy.overrides]]
+module = ["yaml"]
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

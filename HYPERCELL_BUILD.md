@@ -252,7 +252,7 @@ done here.
 
 ## §B13 · Escalations & status (living section — the implementing session edits this)
 
-- [ ] **P0** p0.1 (seeded) · p0.2 (seeded) · p0.3 · p0.4 · p0.5 · p0.6 · p0.7
+- [x] **P0** p0.1 · p0.2 · p0.3 · p0.4 · p0.5 · p0.6 (image + manifests scaffolded; on-cluster deploy pending operator's k3s) · p0.7 (drill green: mock + LIVE deepseek; crash→resume→exactly-once). Gate: pytest 13✓ ruff✓ mypy✓. Artifact: `bench/.hypercellstate/p0-stem.json`. **HC-1/HC-2/HC-6 met.**
 - [ ] **P1** p1.1 · p1.2 · p1.3 · p1.4 · p1.5
 - [ ] **P2** p2.1 · p2.2 · p2.3 · p2.4 · p2.5
 - [ ] **P3** p3.1 · p3.2 · p3.3 · p3.4    · [ ] **P4** (HC-9)    · [ ] **P5** (HC-10)

@@ -24,10 +24,9 @@ build/
 dist/
 *.egg-info/
 
-# --- runtime state (nuclei, ledgers, indexes are per-run data, not source) ---
-.hypercellstate/**
-!bench/.hypercellstate/          # falsifier DECISION artifacts are committed
-!bench/.hypercellstate/.gitkeep
+# --- runtime state (the default HYPERCELL_HOME at repo root; nuclei/ledgers/indexes) ---
+/.hypercellstate/
+# bench/.hypercellstate/ IS committed on purpose (falsifier decision artifacts)
 nuclei/
 *.db
 *.db-wal
