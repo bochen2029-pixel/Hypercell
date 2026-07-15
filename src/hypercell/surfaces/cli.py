@@ -87,7 +87,7 @@ _DEFAULT_MODELS = {
     "deepseek": "deepseek-chat",
     "cerebras": "llama-3.3-70b",
     "openai": "gpt-4o-mini",
-    "glm": "glm-4",
+    "glm": "glm-4.5-flash",
     "kimi": "moonshot-v1-8k",
     "qwen": "qwen-plus",
     "grok": "grok-2",

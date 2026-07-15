@@ -16,7 +16,7 @@ from .openai_compat import OpenAICompatCognition
 PROVIDER_DEFAULTS: dict[str, str] = {
     "deepseek": "https://api.deepseek.com/v1",
     "cerebras": "https://api.cerebras.ai/v1",
-    "glm": "https://open.bigmodel.cn/api/paas/v4",
+    "glm": "https://api.z.ai/api/paas/v4",
     "kimi": "https://api.moonshot.cn/v1",
     "qwen": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
     "grok": "https://api.x.ai/v1",
