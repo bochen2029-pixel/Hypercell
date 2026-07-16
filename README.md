@@ -54,10 +54,19 @@ with keys in `.env`. It is built to run the same in a container or on k3s (`imag
 
 ## What is here
 
-- `HYPERCELL_ARCHITECTURE.md` is the constitution: the axioms, the grammar, the L0 to L4
-  stack, the depth dial, the external-oracle discipline, and the falsifiers.
-- `HYPERCELL_BUILD.md` is the build runbook (P0 through P5, each rung falsifier-gated).
-- `contracts/` holds the frozen wire, nucleus, role, run, and oracle contracts.
+- **`HYPERCELL_V5_ARCHITECTURE.md` is the current constitution** (v5.0 — draft for
+  ratification): the thirteen axioms including the Fold Law, the eight-noun / seven-verb
+  grammar with the world-touching `act` verb, the trust / act / economics planes, two-phase
+  grading, the staged identity firewall, the build ladder from the live P0–P2 upward, and the
+  full organ-by-organ falsifier index. It supersedes v1 (below) and the interim v2, folding
+  the v3 mechanism wave into one verified document.
+- `HYPERCELL_V1_ARCHITECTURE.md` is the **original constitution**, preserved verbatim — the
+  ratified law the live P0–P2 code was built against. v5 keeps every v1 law it found right and
+  cites the live code by `file:line` where each mechanism goes next.
+- `HYPERCELL_BUILD.md` is the v1 build runbook (P0 through P5, each rung falsifier-gated);
+  v5 §14 carries the re-cut ladder.
+- `contracts/` holds the frozen v1 wire, nucleus, role, run, and oracle contracts (v5
+  specifies nine — the four new plane contracts land as the ladder is built).
 - `src/hypercell/` is the fabric: cells, the swappable cognition seam, the Medium, the
   conductor (tournament, drive, router, schedule, fanout), and the surfaces (CLI, HTTP
   API, MCP, and `hc talk`).
@@ -65,10 +74,14 @@ with keys in `.env`. It is built to run the same in a container or on k3s (`imag
 
 ## Status
 
-Early and honest. P0 (a commandable, provider-swappable, resumable cell), P1 (the
-tournament Culture that converges against an external oracle), and P2 (the self-driving
-loop with a cost governor) are built and live-tested; the conductor also runs on-cluster
-on k3s. This is a working stem, not a finished product. `TODO.md` lists what is parked.
+Early and honest — the **code is the live v1 stem; the design is v5**. P0 (a commandable,
+provider-swappable, resumable cell), P1 (the tournament Culture that converges against an
+external oracle), and P2 (the self-driving loop with a cost governor) are built and
+live-tested (`bench/.hypercellstate/`); the conductor has run on-cluster on k3s
+(crash-resume is artifacted; on-cluster PVC survival is witnessed and pending a committed
+artifact). This is a working stem, not a finished product — v5 is the constitution it grows
+into, and its §14–§15 are the rung-by-rung plan and its falsifiers. `TODO.md` lists what is
+parked.
 
 ## License
 
