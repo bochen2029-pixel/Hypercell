@@ -30,6 +30,7 @@ from typing import Any
 from ..common import clock
 from ..common.canon import canon_bytes
 from ..common.ledger import chain_step, leaf
+from .wake import Doorbell, WakeStats, wait
 from .wire import BODY_HARD_CAP, AclDenied, check_acl, is_known
 
 #: Per-culture chain anchor (wire.md §5.2). Chain-versioned, never wire-versioned: a wire semver
@@ -78,6 +79,7 @@ class LocalMedium:
         self._db.execute("PRAGMA busy_timeout=5000")
         self._db.execute("PRAGMA foreign_keys=ON")
         self._init()
+        self._doorbell = Doorbell(home)
 
     def _init(self) -> None:
         self._db.executescript(
@@ -203,6 +205,9 @@ class LocalMedium:
             self._db.execute("ROLLBACK")
             raise
         del cur
+        # Ring AFTER the commit: a bell for a record that then rolls back would wake a reader to
+        # find nothing, and a hint that lies is worse than a hint that is slow.
+        self._doorbell.ring(culture)
         return Posted(seq=seq, culture=culture, hash=new_hash)
 
     # ---------------------------------------------------------------- reading
@@ -289,6 +294,38 @@ class LocalMedium:
             for m in self.read(culture)
         ]
         return canon_bytes(msgs)
+
+    def data_version(self) -> int:
+        """SQLite bumps this whenever ANOTHER connection commits — the fallback's whole basis."""
+        row = self._db.execute("PRAGMA data_version").fetchone()
+        return int(row[0]) if row else 0
+
+    def wait(
+        self,
+        consumer: str,
+        culture: str,
+        *,
+        filt: Filter | None = None,
+        timeout_s: float = 5.0,
+        fallback_tick_s: float = 0.05,
+    ) -> tuple[list[dict[str, Any]], WakeStats]:
+        """Block until matching records arrive, then advance the cursor (C3, W1).
+
+        A waiting cell makes no model calls: waiting is pure I/O and never touches the cognition
+        seam. A sleeping cell costs a stat() per tick and nothing else.
+        """
+        return wait(
+            check=lambda: self.poll(consumer, culture, filt=filt),
+            doorbell=self._doorbell,
+            culture=culture,
+            data_version=self.data_version,
+            timeout_s=timeout_s,
+            fallback_tick_s=fallback_tick_s,
+        )
+
+    def sever_hint(self) -> None:
+        """Kill the doorbell, leave the log intact. The fallback must still deliver everything."""
+        self._doorbell.sever()
 
     def close(self) -> None:
         self._db.close()
