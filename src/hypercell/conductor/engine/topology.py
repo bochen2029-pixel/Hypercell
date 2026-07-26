@@ -202,7 +202,8 @@ async def run_tournament(
             break
 
     for c in cells:
-        c.nucleus.close()
+        if c.nucleus is not None:   # a d0 cell has no nucleus to close (NUC-9)
+            c.nucleus.close()
     medium.close()
     return TournamentResult(
         run_id=run_id, champion=champion, converged=converged, rounds_run=rounds_run, history=history

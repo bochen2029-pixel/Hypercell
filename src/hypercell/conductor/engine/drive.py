@@ -133,7 +133,8 @@ async def run_drive(
             break
 
     for c in cells:
-        c.nucleus.close()
+        if c.nucleus is not None:   # a d0 cell has no nucleus to close (NUC-9)
+            c.nucleus.close()
     medium.close()
     return DriveResult(
         run_id=run_id, champion_arm=champion_arm, champion_score=max(0.0, champion_score),
