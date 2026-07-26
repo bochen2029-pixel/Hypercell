@@ -146,7 +146,7 @@ def check_c2() -> list[Violation]:
             if name in forbidden:
                 out.append(Violation(
                     "C2", f"{path.relative_to(SRC)}:{node.lineno}",
-                    f"surface calls {name}() — {forbidden[name]}",
+                    f"surface calls {name}() -- {forbidden[name]}",
                     "compile the intent to a CommandEnvelope and post it; the command plane "
                     "executes (lands at e′ with SUR-s1)",
                 ))
@@ -157,11 +157,11 @@ def main() -> int:
     c1, c2 = check_c1(), check_c2()
 
     if c1:
-        print(f"LAYER-1 C1: FAIL — {len(c1)} forbidden edge(s)\n")
+        print(f"LAYER-1 C1: FAIL -- {len(c1)} forbidden edge(s)\n")
         for v in c1:
             print(f"  {v.where}\n    {v.detail}\n    fix: {v.fix}")
     else:
-        print("LAYER-1 C1: PASS — every import points down")
+        print("LAYER-1 C1: PASS -- every import points down")
 
     # C2 is a KNOWN-RED baseline, not a pass/fail gate, until the command plane lands at e′.
     # Reporting it as green would be a lie; failing CI on it would block the ladder's own order.
@@ -169,7 +169,7 @@ def main() -> int:
     status = "at baseline" if len(c2) <= C2_BASELINE else "GROWING"
     print(f"\nLAYER-1 C2: {len(c2)}/{C2_BASELINE} known surface->engine calls ({status})")
     if len(c2) > C2_BASELINE:
-        print("  C2 regressed — a NEW surface violation was added:")
+        print("  C2 regressed -- a NEW surface violation was added:")
         for v in c2:
             print(f"    {v.where}  {v.detail}")
         return 1

@@ -190,6 +190,10 @@ def test_no_credential_bytes_reach_any_receipt_across_three_profiles(ex: ActExec
     ex.act("web.search", {"query": f"ipv4 {PLANTED}"}, harm_declared="H1")
     ex.act("fs.read", {"path": f"ipv4-spec.txt#{PLANTED}"}, harm_declared="H1")
 
+    # Receipts are gold and so already durable, but say it anyway: "the credential is absent" is
+    # also true of an empty file, and a scrub test that can pass by measuring nothing is not a test.
+    ex.nucleus.ledger.flush()
+
     raw = ex.nucleus.ledger_path.read_text(encoding="utf-8")
     assert PLANTED not in raw, "a planted credential reached the ledger bytes"
     assert "[SCRUBBED]" in raw or "[REDACTED:" in raw, "nothing recorded that a scrub happened"

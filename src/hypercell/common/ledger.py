@@ -76,6 +76,50 @@ class VerifyReport:
     reason: str = ""
 
 
+def _tail_record(path: Path) -> tuple[dict[str, Any] | None, int]:
+    """The last parseable record in `path`, and the offset where trustworthy content ends.
+
+    Read from the END, expanding a window backwards. Recovery needs exactly three things -- the
+    last seq, the last head hash, and where a torn tail begins -- and all three live in the FINAL
+    record, so reading the whole file to find them is pure waste. The null was a full forward walk:
+    O(history) on every open, which made a 100 K-record cell take seconds to wake and grow slower
+    every day it stayed alive (the same cost the N3' render cursor removes, one layer down).
+
+    CHECKING history is `verify_chain`'s job and is deliberately not on the open path. Opening a
+    log and auditing it are two different acts, and conflating them means you can afford neither.
+    """
+    size = path.stat().st_size
+    if size == 0:
+        return None, 0
+    window = 1 << 13
+    with open(path, "rb") as f:
+        while True:
+            start = 0 if window >= size else size - window
+            f.seek(start)
+            buf = f.read(size - start)
+            complete: list[tuple[int, bytes]] = []
+            at = start
+            for i, piece in enumerate(buf.splitlines(keepends=True)):
+                at += len(piece)
+                # A line counts only if terminated; and when the window starts mid-file the first
+                # piece is a fragment by construction, so it is never a record.
+                if piece.endswith(b"\n") and not (i == 0 and start > 0):
+                    complete.append((at, piece))
+            for end_off, piece in reversed(complete):
+                stripped = piece.strip()
+                if not stripped:
+                    continue  # trailing blank lines carry nothing; drop them with the tail
+                try:
+                    rec = json.loads(stripped)
+                except json.JSONDecodeError:
+                    continue  # a mangled final line goes the way of a torn one
+                if isinstance(rec, dict):
+                    return rec, end_off
+            if start == 0:
+                return None, 0
+            window *= 8
+
+
 class Ledger:
     """One append-only, hash-chained JSONL log with a group-commit buffer.
 
@@ -89,6 +133,10 @@ class Ledger:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._anchor = anchor_hash if anchor_hash is not None else anchor(claim_id)
         self._buffer: list[str] = []
+        #: The ts of the most recent append, so a caller never has to re-READ the log to learn
+        #: what it just wrote. Reading it back flushed the group-commit buffer on every append,
+        #: which turned every "standard" write into an fsync -- the null NUC-7 bounds.
+        self.last_ts = ""
         self._seq = 0
         self._head = self._anchor
         self._recover()
@@ -96,46 +144,34 @@ class Ledger:
     # ---------------------------------------------------------------- open / recovery
 
     def _recover(self) -> None:
-        """Walk sealed history, then truncate a torn final line. A half-record is not a record."""
-        # Sealed segments come first and are immutable, so they need no torn-tail handling — but
-        # they DO carry the seq and head we must continue from. Skipping them would restart the
-        # chain at the anchor and re-issue sequence numbers already sealed into history.
-        for seg in self.segment_files():
-            for rec in self._read_file(seg):
-                self._seq = int(rec.get("seq", self._seq))
-                if isinstance(rec.get("hash"), str):
-                    self._head = _unhex(rec["hash"])
+        """Recover seq + head from the tail, then truncate a torn final line.
+
+        A half-record is not a record. O(1) in history -- see `_tail_record`.
+        """
+        # Sealed segments are immutable and in seq order, so only the LAST one holding a record
+        # carries the seq and head to continue from. Skipping them would restart the chain at the
+        # anchor and re-issue sequence numbers already sealed into history.
+        for seg in reversed(self.segment_files()):
+            rec, _ = _tail_record(seg)
+            if rec is not None:
+                self._adopt(rec)
+                break
 
         if not self.path.exists():
             return
 
-        raw = self.path.read_bytes()
-        if not raw:
-            return
-
-        keep_to = 0
-        seq, head = self._seq, self._head  # continue from sealed history, not from zero
-        for line in raw.splitlines(keepends=True):
-            text = line.decode("utf-8", errors="replace")
-            if not text.endswith("\n"):
-                break  # torn tail: the writer died before the newline landed
-            stripped = text.strip()
-            if not stripped:
-                keep_to += len(line)
-                continue
-            try:
-                rec = json.loads(stripped)
-            except json.JSONDecodeError:
-                break  # a mangled line ends the trustworthy prefix
-            keep_to += len(line)
-            seq = int(rec.get("seq", seq))
-            if isinstance(rec.get("hash"), str):
-                head = _unhex(rec["hash"])
-
-        if keep_to != len(raw):
+        rec, keep_to = _tail_record(self.path)
+        if keep_to != self.path.stat().st_size:
             with open(self.path, "r+b") as f:
                 f.truncate(keep_to)
-        self._seq, self._head = seq, head
+        if rec is not None:
+            self._adopt(rec)
+
+    def _adopt(self, rec: dict[str, Any]) -> None:
+        """Continue the chain from an existing record."""
+        self._seq = int(rec.get("seq", self._seq))
+        if isinstance(rec.get("hash"), str):
+            self._head = _unhex(rec["hash"])
 
     # ---------------------------------------------------------------- writing
 
@@ -190,6 +226,7 @@ class Ledger:
         if refs:
             record["refs"] = refs
 
+        self.last_ts = str(record["ts"])
         self._head = chain_step(self._head, leaf(record))
         record["hash"] = _hex(self._head)
         self._buffer.append(json.dumps(record, ensure_ascii=False) + "\n")

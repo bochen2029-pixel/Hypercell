@@ -54,4 +54,5 @@ ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+markers = ["slow: measured at full scale (100K records); run explicitly"]
 testpaths = ["tests"]

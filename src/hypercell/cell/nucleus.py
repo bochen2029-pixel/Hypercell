@@ -1,8 +1,12 @@
 """The nucleus: a cell's private, persistent self (contracts/nucleus.md).
 
-The **ledger is truth**; the SQLite index is a disposable render, rebuilt from the ledger on every
-open so a stale or missing index is never trusted (A13). Identity binds to the stable claim-id, not
-to the process. Resume is reconstruction + idempotency, never deterministic replay.
+The **ledger is truth**; the SQLite index is a disposable render — derivable from the ledger alone,
+so a missing one costs speed and never truth (A13). Identity binds to the stable claim-id, not to the
+process. Resume is reconstruction + idempotency, never deterministic replay.
+
+Since N3′ the render carries an **in-render cursor** and folds FORWARD on open. The null was
+rebuild-on-every-open: O(history) every time, so a cell got slower every day it stayed alive, which
+is the one thing a long-lived resident must not do.
 
 Since N1′ the ledger is **hash-chained and genesis-anchored** (`common/ledger.py`): every record
 chains to its predecessor, seq 1 carries the contract census, and `verify()` names the first record
@@ -10,11 +14,13 @@ that does not re-derive. Tamper-evidence is a property of the log now, not a pro
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 from pathlib import Path
 from typing import Any
 
+from ..common.canon import canon_bytes
 from ..common.census import census as contract_census
 from ..common.ledger import Durability, Ledger, VerifyReport
 from .membrane import redact
@@ -52,7 +58,7 @@ class Nucleus:
             # bytes nobody witnessed (the HONEST-EPOCH pattern, nucleus.md §1).
             self.ledger.adopt_chain(contract_census(), at_seq=self.ledger.seq + 1)
 
-        self.rebuild()
+        self.fold()
 
     # ---------------------------------------------------------------- index (a render, not truth)
 
@@ -63,6 +69,12 @@ class Nucleus:
               seq INTEGER PRIMARY KEY, ts TEXT, kind TEXT, idem TEXT, body TEXT, refs TEXT);
             CREATE INDEX IF NOT EXISTS idx_idem ON ledger(idem);
             CREATE INDEX IF NOT EXISTS idx_kind ON ledger(kind);
+            -- N3': the IN-RENDER CURSOR. The null was rebuild-on-every-open, which re-read the
+            -- whole ledger to learn what it already knew: O(history) per open, so a cell got
+            -- slower every day it stayed alive. That is the one thing a long-lived resident
+            -- must not do.
+            CREATE TABLE IF NOT EXISTS render_state(
+              name TEXT PRIMARY KEY, at_seq INTEGER NOT NULL, digest TEXT);
             """
         )
         self._db.commit()
@@ -74,23 +86,89 @@ class Nucleus:
         row = self._db.execute("SELECT MAX(seq) FROM ledger").fetchone()
         return int(row[0]) if row and row[0] is not None else 0
 
-    def rebuild(self) -> int:
+    def cursor(self, name: str = "index") -> int:
+        row = self._db.execute("SELECT at_seq FROM render_state WHERE name=?", (name,)).fetchone()
+        return int(row[0]) if row else 0
+
+    def fold(self, name: str = "index") -> int:
+        """Fold forward from the cursor. Returns how many NEW records were folded.
+
+        This is what makes an open O(new) rather than O(history). A resident alive for a month
+        opens as fast as one born this morning — the difference between a fabric you can leave
+        running and one you have to restart.
+        """
+        since = self.cursor(name)
+        head = self.ledger.seq
+        if since > head:
+            # The render is AHEAD of the ledger: a torn tail was truncated under it, or an older
+            # log was restored. Folding forward cannot repair that, so rebuild rather than guess.
+            return self.rebuild(name)
+
+        if since == head:
+            # Nothing new. Return WITHOUT stamping: `_advance` recomputes the render digest, which
+            # is O(history), and paying that on every warm open would put the whole render back on
+            # the hot path — the exact cost the cursor exists to remove. A warm open must be O(1).
+            return 0
+
+        n = 0
+        for r in self.ledger.records(lo=since + 1):
+            self._mirror(r)
+            n += 1
+        self._advance(name, head)
+        self._db.commit()
+        return n
+
+    def _mirror(self, r: dict[str, Any]) -> None:
+        self._db.execute(
+            "INSERT OR REPLACE INTO ledger(seq,ts,kind,idem,body,refs) VALUES(?,?,?,?,?,?)",
+            (
+                r["seq"], r["ts"], r["kind"], r.get("idem"),
+                json.dumps(r["body"], ensure_ascii=False),
+                json.dumps(r.get("refs", [])),
+            ),
+        )
+
+    def _advance(self, name: str, at_seq: int) -> None:
+        self._db.execute(
+            "INSERT INTO render_state(name,at_seq,digest) VALUES(?,?,?) "
+            "ON CONFLICT(name) DO UPDATE SET at_seq=excluded.at_seq, digest=excluded.digest",
+            (name, at_seq, self.render_digest()),
+        )
+
+    def render_digest(self) -> str:
+        """A stable digest over the FOLDED state — what two machines must agree on (NUC-2).
+
+        Over (seq, kind, idem, body), never over `ts` or row order: a digest that moved with
+        insertion order would make "identical rebuild" a statement about SQLite rather than
+        about the fold.
+        """
+        rows = self._db.execute("SELECT seq, kind, idem, body FROM ledger ORDER BY seq").fetchall()
+        payload = [[int(a), b, c, json.loads(d)] for a, b, c, d in rows]
+        return "sha256:" + hashlib.sha256(canon_bytes(payload)).hexdigest()
+
+    def verify_render(self, name: str = "index") -> tuple[bool, str]:
+        """Does the render still hash to what the cursor recorded? (NUC-2's corruption half.)"""
+        row = self._db.execute(
+            "SELECT at_seq, digest FROM render_state WHERE name=?", (name,)
+        ).fetchone()
+        if not row:
+            return False, "no render state - the index has never been folded"
+        recorded = str(row[1] or "")
+        if not recorded:
+            return False, "render digest not stamped - reopen or fold to stamp it"
+        actual = self.render_digest()
+        if recorded != actual:
+            return False, f"render corrupted: recorded {recorded[:23]}..., recomputed {actual[:23]}..."
+        return True, f"render clean at seq {int(row[0])}, {actual[:23]}..."
+
+    def rebuild(self, name: str = "index") -> int:
         """Regenerate the index from the ledger alone (no model). Proves the index is derivable."""
         self._db.execute("DELETE FROM ledger")
         n = 0
         for r in self.ledger.records():
-            self._db.execute(
-                "INSERT OR REPLACE INTO ledger(seq,ts,kind,idem,body,refs) VALUES(?,?,?,?,?,?)",
-                (
-                    r["seq"],
-                    r["ts"],
-                    r["kind"],
-                    r.get("idem"),
-                    json.dumps(r["body"], ensure_ascii=False),
-                    json.dumps(r.get("refs", [])),
-                ),
-            )
+            self._mirror(r)
             n += 1
+        self._advance(name, self.ledger.seq)
         self._db.commit()
         return n
 
@@ -119,22 +197,19 @@ class Nucleus:
         seq = self.ledger.append(kind, body, idem=idem, refs=refs, durability=durability)
         self._db.execute(
             "INSERT INTO ledger(seq,ts,kind,idem,body,refs) VALUES(?,?,?,?,?,?)",
-            (
-                seq,
-                self._last_ts(seq),
-                kind,
-                idem,
-                json.dumps(body, ensure_ascii=False),
-                json.dumps(refs or []),
-            ),
+            (seq, self.ledger.last_ts, kind, idem,
+             json.dumps(body, ensure_ascii=False), json.dumps(refs or [])),
+        )
+        # The cursor moves with the mirror, so the next open folds nothing. The DIGEST is
+        # deliberately not recomputed here: it is O(history), and putting it on the append path is
+        # exactly the write amplification NUC-7 bounds. It is stamped on fold and on close.
+        self._db.execute(
+            "INSERT INTO render_state(name,at_seq,digest) VALUES('index',?,NULL) "
+            "ON CONFLICT(name) DO UPDATE SET at_seq=excluded.at_seq, digest=NULL",
+            (seq,),
         )
         self._db.commit()
         return seq
-
-    def _last_ts(self, seq: int) -> str:
-        for r in self.ledger.records(lo=seq, hi=seq):
-            return str(r["ts"])
-        return ""
 
     def checkpoint(self, state: dict[str, Any]) -> int:
         """Working-state snapshot for long d1/d2 loops.
@@ -215,5 +290,8 @@ class Nucleus:
         return self.ledger.head_hash
 
     def close(self) -> None:
+        """Stamp the render digest on the way out, so the next open can verify it (NUC-2)."""
         self.ledger.close()
+        self._advance("index", self.ledger.seq)
+        self._db.commit()
         self._db.close()

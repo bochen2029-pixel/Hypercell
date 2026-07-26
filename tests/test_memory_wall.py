@@ -325,7 +325,12 @@ def test_a_secret_never_reaches_the_ledger(mem: Memory) -> None:
     key = "sk-ant-api03-ZZZZZZZZZZZZZZZZZZZZZZZZZZZZ"
     mem.nucleus.append("percept", {"source": "tool", "content": f"export ANTHROPIC_API_KEY={key}"})
 
-    raw = (mem.nucleus.ledger_path).read_text(encoding="utf-8")
+    # Standard appends ride the group-commit, so the bytes are not on disk until they drain. Flush
+    # before reading them: "the key is absent" is also true of an EMPTY file, so without this the
+    # test could pass by measuring nothing.
+    mem.nucleus.ledger.flush()
+
+    raw = mem.nucleus.ledger_path.read_text(encoding="utf-8")
     assert key not in raw, "the raw key reached the ledger bytes"
     assert "[REDACTED:" in raw
     assert mem.nucleus.verify().ok, "the chain must verify over post-redaction bytes"
