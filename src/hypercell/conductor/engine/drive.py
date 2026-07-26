@@ -16,6 +16,7 @@ from ...common.types import Outcome, ProviderConfig, Role
 from ...medium.bus import open_medium
 from ..governor import BudgetExceeded, Governor
 from .converge import run_oracle
+from .driver import TOPOLOGIES, Convergence, ScoringEvent
 from .schedule import Arm, ucb1
 from .topology import _ANGLES
 
@@ -86,11 +87,11 @@ async def run_drive(
     by_name = {c.role.name: c for c in cells}
     champion_arm: str | None = None
     champion_score = -1.0
-    champion_passed = False
     best_code: dict[str, str] = {}
     history: list[DriveStep] = []
     converged = False
-    stable = 0
+    conv = Convergence(target=target, stable_k=stable_k)
+    _row = TOPOLOGIES["drive"]  # = tournament x {dispatch: ucb}; sugar, not a second engine
     reason = "max-steps"
 
     for step in range(1, max_steps + 1):
@@ -117,16 +118,14 @@ async def run_drive(
             best_code[arm.name] = code
         history.append(DriveStep(step=step, arm=arm.name, score=receipt.score, outcome=receipt.outcome))
 
-        # champion selection: outcome is authoritative (exit-code, non-mintable), score is the tiebreak.
-        passed = receipt.outcome == Outcome.passed
-        if receipt.outcome != Outcome.invalid and (passed, receipt.score) > (
-            champion_passed, champion_score
-        ):
-            champion_arm, champion_score, champion_passed = arm.name, receipt.score, passed
-            stable = 0
-        else:
-            stable += 1
-        if champion_passed and champion_score >= target and stable >= stable_k:
+        # ONE driver (RE-1). This used to increment `stable` on an INVALID grading, which the
+        # tri-state EXCLUDES: an error is not evidence in either direction, and letting it accrue
+        # stability meant a failing oracle could converge the run on a stale champion — F14.
+        conv.observe([ScoringEvent(arm.name, receipt.outcome, receipt.score, at=step)])
+        if conv.champion is not None:
+            champion_arm = conv.champion.who
+            champion_score = conv.champion.score
+        if conv.converged:
             converged = True
             reason = "converged"
             medium.post(culture, "conductor", "verdict",

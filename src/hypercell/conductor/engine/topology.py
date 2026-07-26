@@ -19,6 +19,7 @@ from ...medium.bus import open_medium
 from ...medium.transport_local import LocalMedium
 from ..governor import BudgetExceeded, Governor
 from .converge import run_oracle
+from .driver import TOPOLOGIES, Convergence, ScoringEvent
 from .judge import judge_score
 
 
@@ -172,8 +173,9 @@ async def run_tournament(
 
     champion: Candidate | None = None
     history: list[Candidate] = []
-    stable = 0
     converged = False
+    conv = Convergence(target=target, stable_k=stable_k)
+    _row = TOPOLOGIES["tournament"]
     rounds_run = 0
 
     for rnd in range(1, rounds + 1):
@@ -194,20 +196,20 @@ async def run_tournament(
             )
         )
         history.extend(cands)
-        valid = [c for c in cands if c.outcome != Outcome.invalid]  # INVALID excluded (tri-state)
-        round_best = max(valid, key=lambda c: (c.outcome == Outcome.passed, c.score), default=None)
-        prev = (champion.outcome == Outcome.passed, champion.score) if champion else (False, -1.0)
-        if round_best is not None and (round_best.outcome == Outcome.passed, round_best.score) > prev:
-            champion = round_best
-            stable = 0
-        else:
-            stable += 1
-        if (
-            champion is not None
-            and champion.outcome == Outcome.passed  # outcome is authoritative (exit-code, HC-7)
-            and champion.score >= target
-            and stable >= stable_k
-        ):
+        # ONE driver (RE-1): the counting, the champion rule and the predicate live in driver.py.
+        # This used to increment `stable` even when a round produced ZERO valid candidates, so a
+        # broken oracle bought convergence one empty round at a time — F14.
+        conv.observe([ScoringEvent(c.cell, c.outcome, c.score, at=rnd) for c in cands])
+        if conv.champion is not None:
+            # Match on (cell, ROUND). Keying by cell name alone would return that cell's LATEST
+            # candidate, so a champion won in round 1 would report round 3's artifact path — a
+            # certificate pointing at bytes that never won.
+            champion = next(
+                c for c in history if c.cell == conv.champion.who and c.round == conv.champion.at
+            )
+        if conv.converged and champion is not None:
+            # `converged` implies a champion by construction (the predicate requires outcome
+            # `passed`), but narrowing it here keeps that implication CHECKED rather than assumed.
             converged = True
             medium.post(
                 culture, "conductor", "verdict",
