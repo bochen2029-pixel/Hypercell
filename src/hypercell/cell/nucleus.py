@@ -17,6 +17,7 @@ from typing import Any
 
 from ..common.census import census as contract_census
 from ..common.ledger import Durability, Ledger, VerifyReport
+from .membrane import redact
 
 
 class Nucleus:
@@ -102,7 +103,17 @@ class Nucleus:
         refs: list[int] | None = None,
         durability: Durability = "standard",
     ) -> int:
-        """Append one chained record to the ledger (truth), then mirror it into the index (render)."""
+        """Append one chained record to the ledger (truth), then mirror it into the index (render).
+
+        Redaction runs HERE, before the ledger canonicalizes and hashes anything
+        (L-REDACT-BEFORE-CANON). An append-only log cannot un-say a secret, so the only correct
+        place to catch one is before the append.
+        """
+        body, secrets = redact(body)
+        if secrets:
+            # The redaction is itself a fact about the record — an auditor must be able to see that
+            # something was removed, without the removed thing being recoverable.
+            body = {"red": secrets, **body} if isinstance(body, dict) else body
         seq = self.ledger.append(kind, body, idem=idem, refs=refs, durability=durability)
         self._db.execute(
             "INSERT INTO ledger(seq,ts,kind,idem,body,refs) VALUES(?,?,?,?,?,?)",
@@ -142,6 +153,28 @@ class Nucleus:
             return None
         state: dict[str, Any] = json.loads(row[0])
         return state
+
+    def record(self, seq: int) -> dict[str, Any] | None:
+        """One record by seq, off the index. The ref-closure walk leans on this being cheap."""
+        row = self._db.execute(
+            "SELECT seq, ts, kind, idem, body, refs FROM ledger WHERE seq=?", (seq,)
+        ).fetchone()
+        if not row:
+            return None
+        return {
+            "seq": int(row[0]),
+            "ts": row[1],
+            "kind": row[2],
+            "idem": row[3],
+            "body": json.loads(row[4]),
+            "refs": json.loads(row[5] or "[]"),
+        }
+
+    def records_of_kind(self, kind: str) -> list[dict[str, Any]]:
+        rows = self._db.execute(
+            "SELECT seq FROM ledger WHERE kind=? ORDER BY seq", (kind,)
+        ).fetchall()
+        return [r for r in (self.record(int(s[0])) for s in rows) if r is not None]
 
     def outcome_for(self, idem: str) -> Any | None:
         """**The read-barrier.** The completed outcome for an idem, or None. The exactly-once guard.

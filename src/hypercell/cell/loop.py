@@ -94,6 +94,10 @@ class VerbExecutor:
             raise SystemExit(f"drill: crashed before outcome ({verb}/{idem})")
 
         outcome = await run()
+        # The verb rides the outcome so the record is self-describing: the register wall has to know
+        # whether an outcome is receipt-backed (`act`) or model text (`ask`/`produce`) without
+        # joining back to its action.
+        outcome = {"verb": verb, **outcome}
         # Gold: the outcome IS the exactly-once guarantee. If it is not durable before we return,
         # a crash here re-spends the call on resume -- which is the bug the barrier exists to kill.
         seq = self.nucleus.append("outcome", outcome, idem=idem, durability="gold")
