@@ -338,6 +338,21 @@ def test_identical_content_stores_once(tmp_path: Path) -> None:
     assert a.sha256 == b.sha256 and a.path == b.path
 
 
-def test_the_annex_ships_exactly_the_three_h0_profiles() -> None:
-    assert set(ANNEX_A) == {"web.search", "web.fetch", "fs.read"}
-    assert all(p.harm_floor == "H0" for p in ANNEX_A.values())
+def test_the_annex_is_a_closed_registry() -> None:
+    """Every row is enumerated here, so a profile cannot arrive without someone deciding to add it.
+
+    GROUND-0 shipped three H0 rows; ACT-1 added the world-write tier. The point of the assertion is
+    unchanged — Annex A is a registry, not a grab bag — so it names the split rather than a count.
+    """
+    from hypercell.act.profiles import NOT_YET_ADMITTED
+
+    h0 = {ref for ref, p in ANNEX_A.items() if p.harm_floor == "H0"}
+    h1 = {ref for ref, p in ANNEX_A.items() if p.harm_floor == "H1"}
+
+    assert h0 == {"web.search", "web.fetch", "fs.read"}
+    assert h1 == {"deliver.outbox", "code.run@sandbox"}
+    assert set(ANNEX_A) == h0 | h1, "a profile is neither H0 nor H1; Annex A has no third tier yet"
+
+    # Every H1+ row must be probeable, or `unknown` has no way to resolve (act.md §8).
+    for ref in h1 - NOT_YET_ADMITTED:
+        assert ANNEX_A[ref].reconcile_probe, f"{ref} is admitted at H1 with no reconcile probe"

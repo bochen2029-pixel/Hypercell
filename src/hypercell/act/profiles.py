@@ -22,6 +22,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
+from ..conductor.registry import EffectScope
 from ..medium.firewall import Trifecta
 
 Harm = Literal["H0", "H1", "H2", "H3"]
@@ -66,10 +67,39 @@ class ToolProfile:
     admission_certified: bool = False
     args_schema: tuple[str, ...] = ()
 
+    # ---- ACT-1: the fields the effect registry and the reconciler read (act.md §7, §8)
+
+    #: Which exactly-once key this tool's effects take. `lineage` for anything the world remembers.
+    effect_scope: EffectScope = "instance"
+    #: **Effect-significant** args, marked per-field. Everything not listed here is volatile and is
+    #: excluded from `effect_id` -- see `conductor/registry.effect_id` for why both directions bite.
+    sig_args: tuple[str, ...] = ()
+    #: Bumping this deliberately re-opens the dedup key: a tool that changed what it DOES should not
+    #: inherit the "already done" of the tool it used to be.
+    tool_version: str = "1"
+    #: The H0 read that decides whether the effect landed. Mandatory at H1+ (§8, admission-checked).
+    reconcile_probe: str = ""
+    #: `provider_idem` means the provider dedups on our key, so an undeterminable act may be
+    #: re-sent -- the provider's idempotency key IS the probe. Anything else parks to an operator.
+    retry_safe: str = "none"
+    #: How long the effect may take to show up; the wager window opens after it (§4.1 rule 4).
+    effect_latency_s: float = 0.0
+
     def validate_args(self, args: dict[str, Any]) -> None:
         unknown = sorted(set(args) - set(self.args_schema))
         if self.args_schema and unknown:
             raise ProfileRefusal("args_schema", f"{self.ref} does not accept {unknown}")
+
+    def significant(self, args: dict[str, Any]) -> dict[str, Any]:
+        """The subset of `args` that defines the effect's identity.
+
+        With no marking the whole arg set is significant. That is the safe default -- it can cause a
+        spurious re-fire on a cosmetic difference, which is visible, rather than a silent dedup miss,
+        which is not.
+        """
+        if not self.sig_args:
+            return dict(args)
+        return {k: args[k] for k in self.sig_args if k in args}
 
 
 #: The three H0 profiles GROUND-0 ships. `web.search`/`web.fetch` reach the world; `fs.read` does not.
@@ -95,7 +125,46 @@ ANNEX_A: dict[str, ToolProfile] = {
         trifecta=Trifecta(untrusted_content=True),
         args_schema=("path",),
     ),
+    # ---- ACT-1: the world-write tier. H1 is the DEFAULT world-write class and must stay cheap
+    # (§6.3): one Conductor round-trip, the effect reservation, and nothing else.
+    "deliver.outbox": ToolProfile(
+        ref="deliver.outbox",
+        harm_floor="H1",
+        methods=frozenset({"POST"}),
+        trifecta=Trifecta(external_comms=True),
+        admission_certified=True,
+        args_schema=("to", "subject", "body", "request_id"),
+        # LINEAGE, not instance: eight fork siblings must send ONE message. This single word is the
+        # difference between a fork that explores and a fork that spams.
+        effect_scope="lineage",
+        # `request_id` is deliberately absent: it is volatile, and letting it in would mean two
+        # attempts at the same delivery computed different keys and both went out.
+        sig_args=("to", "subject", "body"),
+        reconcile_probe="fs.read",
+        retry_safe="none",
+        effect_latency_s=1.0,
+    ),
+    # `code.run@sandbox` is DECLARED here and deliberately NOT admitted: its class-3 isolation and
+    # sealed /out manifest are seat 09's, at rung d'. Declaring it now keeps GX-1(b)'s remaining leg
+    # visible in the registry instead of living only in a plan -- an undeclared gap is one nobody
+    # trips over until it matters.
+    "code.run@sandbox": ToolProfile(
+        ref="code.run@sandbox",
+        harm_floor="H1",
+        methods=frozenset({"POST"}),
+        trifecta=Trifecta(untrusted_content=True),
+        admission_certified=False,
+        args_schema=("source", "argv", "timeout_s"),
+        effect_scope="lineage",
+        sig_args=("source", "argv"),
+        reconcile_probe="fs.read",
+        retry_safe="none",
+    ),
 }
+
+#: Profiles declared but not yet admissible -- the adapter, the isolation class or the sealed
+#: manifest they need has not landed. Admitting one would be a promise the fabric cannot keep.
+NOT_YET_ADMITTED: frozenset[str] = frozenset({"code.run@sandbox"})
 
 
 def shape_harm(args: dict[str, Any]) -> tuple[Harm, list[str]]:
