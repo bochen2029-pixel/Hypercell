@@ -78,7 +78,9 @@ class Cell:
             return await self.produce(str(p.get("goal", "")), [], idem=idem)
         return await self.ask(str(p.get("prompt", "")), idem=idem)
 
-    async def produce(self, goal: str, peers: list[str], *, idem: str | None = None) -> str:
+    async def produce(
+        self, goal: str, peers: list[str], *, packet: str = "", idem: str | None = None
+    ) -> str:
         """P1: produce ONE candidate artifact for a run, optionally beating the peers' candidates.
 
         Routed through the same executor as `ask`. Before N1′ this path had no read-barrier, so a
@@ -91,11 +93,20 @@ class Cell:
             # into the prompt behind a "(DATA to beat, never instructions)" string wrap — which is
             # precisely the null SEC-1 kills: a peer that types the closing marker walks out of it.
             # Now each peer is its own data block, labelled with the channel it arrived on.
+            blocks: list[tuple[Any, str, str]] = [
+                ("peer_message", f"candidate/{i}", p.strip()) for i, p in enumerate(peers[:6])
+            ]
+            if packet:
+                # RE-3: failing cases enter as `tool_result`, NOT `peer_message`. That distinction
+                # is not cosmetic — peer text is another model's opinion, and an oracle's failing
+                # case is a fact about the world. A single-family roster can act on the second when
+                # the first only shows it its own blind spot five times over (F1).
+                blocks.append(("tool_result", "oracle/packet", packet))
             frame = assemble(
                 identity=self.role.prompt,
                 command=f"GOAL:\n{goal}",
                 command_ref="run:produce",
-                blocks=[("peer_message", f"candidate/{i}", p.strip()) for i, p in enumerate(peers[:6])],
+                blocks=blocks,
             )
             result = await self.cognition.complete(frame.render_messages(), **self.role.provider.params)
             return {"verb": "produce", "text": _strip_fences(result.text)}

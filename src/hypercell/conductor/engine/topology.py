@@ -16,11 +16,12 @@ from ...cognition.metered import MeteredCognition, build_adapter
 from ...common import ids
 from ...common.types import Outcome, ProviderConfig, Role
 from ...medium.bus import open_medium
-from ...medium.transport_local import LocalMedium
+from ...medium.transport_local import Filter, LocalMedium
 from ..governor import BudgetExceeded, Governor
 from .converge import run_oracle
 from .driver import TOPOLOGIES, Convergence, ScoringEvent
 from .judge import judge_score
+from .packets import build_packet
 
 
 @dataclass
@@ -80,9 +81,10 @@ async def _produce_and_score(
     medium: LocalMedium,
     culture: str,
     judge_ctx: tuple[Cognition, int] | None = None,
+    packet: str = "",
 ) -> Candidate:
     try:
-        code = await cell.produce(goal, peers)
+        code = await cell.produce(goal, peers, packet=packet)
     except BudgetExceeded:
         return Candidate(cell=cell.role.name, round=rnd, path="", score=0.0, outcome=Outcome.invalid)
     rdir = sandbox / f"r{rnd}"
@@ -181,16 +183,25 @@ async def run_tournament(
     for rnd in range(1, rounds + 1):
         rounds_run = rnd
         peers: list[str] = []
+        packet_text = ""
         if rnd > 1:
             peers = [
                 s["body"]["code"]
                 for s in medium.submissions(culture, rnd - 1)
                 if s.get("body") and s["body"].get("code")
             ]
+            # The packet is a FOLD over the receipts M1 put on the Medium: nothing new is stored,
+            # and any auditor can run the same fold.
+            prior = medium.read(culture, filt=Filter(types=("receipt",), round=rnd - 1))
+            packet = build_packet(prior, round=rnd - 1)
+            packet_text = "" if packet.empty else packet.render()
         cands: list[Candidate] = list(
             await asyncio.gather(
                 *(
-                    _produce_and_score(c, goal, peers, sandbox, rnd, oracle_cmd, medium, culture, judge_ctx)
+                    _produce_and_score(
+                        c, goal, peers, sandbox, rnd, oracle_cmd, medium, culture, judge_ctx,
+                        packet=packet_text,
+                    )
                     for c in cells
                 )
             )
