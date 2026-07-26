@@ -190,13 +190,21 @@ def run(
 
 @app.command()
 def apply(file: str = typer.Option(..., "-f", "--file", help="a run manifest yaml")) -> None:
-    import yaml
 
     from ..common.types import RunManifest
     from ..conductor.engine.topology import run_tournament
+    from ..conductor.manifest import ManifestConflict, apply_file
 
-    data = yaml.safe_load(Path(file).read_text(encoding="utf-8"))
-    m = RunManifest.model_validate(data)
+    # RE-2: freeze the bytes. Every later open reads the frozen copy, so editing the yaml
+    # mid-run cannot silently change the rules a run has already been playing by.
+    try:
+        frozen = apply_file(_home(), file)
+    except ManifestConflict as conflict:
+        typer.echo(f"refused: {conflict}")
+        raise typer.Exit(2) from None
+
+    m = RunManifest.model_validate(frozen.data)
+    typer.echo(f"manifest frozen {frozen.sha256[:23]}...")
     provider, model, base_prompt = "deepseek", "deepseek-chat", None
     if m.roster:
         rr = load_role(m.roster[0].role)
