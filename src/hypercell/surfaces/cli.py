@@ -50,6 +50,26 @@ def ask(
 
 
 @app.command()
+def verify(
+    claim: str = typer.Option(..., "--claim", help="the claim-id whose nucleus chain to verify"),
+) -> None:
+    """Re-derive a nucleus hash chain (NUC-1). On tamper, names the FIRST bad seq — the tamper point."""
+    from ..cell.nucleus import Nucleus
+
+    n = Nucleus(_home(), claim)
+    try:
+        report = n.verify()
+        if report.ok:
+            typer.echo(f"chain OK  {claim}  ({report.checked} records)  head={n.head_hash[:23]}...")
+            raise typer.Exit(0)
+        where = f" at seq {report.first_bad_seq}" if report.first_bad_seq is not None else ""
+        typer.echo(f"chain BROKEN  {claim}{where}\n  {report.reason}")
+        raise typer.Exit(1)
+    finally:
+        n.close()
+
+
+@app.command()
 def preflight(
     as_json: bool = typer.Option(False, "--json", help="emit the status{kind:preflight} body instead of text"),
 ) -> None:

@@ -176,3 +176,21 @@ def test_every_finding_carries_a_fix(sandbox: Path) -> None:
     for f in cc.check().findings:
         assert f.fix.strip(), f"{f.contract}: {f.problem} — no fix offered"
 
+
+# ---------------------------------------------------------------- the census must track the contracts
+
+
+def test_census_matches_the_contracts_on_disk() -> None:
+    """Every genesis record embeds the census, in-chain and tamper-evident.
+
+    So the code's idea of the contract versions must equal what is actually on disk — otherwise
+    every new ledger is born stating a version that was never ratified. Bumping a contract without
+    teaching `common/census.py` about it fails here, which is the point.
+    """
+    from hypercell.common.census import CENSUS
+
+    assert set(CENSUS) == set(cc.THE_NINE), "the census is the 9-tuple (pairing law H2)"
+    for name, declared in CENSUS.items():
+        header = cc.header_of((cc.CONTRACTS / f"{name}.md").read_text(encoding="utf-8"))
+        on_disk = cc.declared_version(header)
+        assert on_disk == declared, f"{name}: census says {declared}, contract says {on_disk}"

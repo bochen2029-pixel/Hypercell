@@ -39,7 +39,7 @@ async def test_crash_then_resume(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     with pytest.raises(SystemExit):
         await cell.ask("recover me", idem="a1")
     assert cog.calls == 0  # crashed before cognition ran
-    assert cell.nucleus.pending() is not None
+    assert cell.nucleus.pending()  # N1': pending() is a list; a stranded action is in it
     cell.nucleus.close()  # simulate process death
 
     monkeypatch.delenv("HYPERCELL_CRASH_BEFORE_OUTCOME")
@@ -49,5 +49,5 @@ async def test_crash_then_resume(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     out = await cell2.resume_pending()
     assert out is not None and "recover me" in out
     assert cog2.calls == 1  # completed exactly once on resume
-    assert cell2.nucleus.pending() is None
+    assert cell2.nucleus.pending() == []
     cell2.nucleus.close()

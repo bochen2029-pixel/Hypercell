@@ -25,12 +25,25 @@ def test_idempotency_outcome(tmp_path: Path) -> None:
 
 
 def test_pending_detection(tmp_path: Path) -> None:
+    # N1': pending() returns a LIST (nucleus.md) -- a d2 resident can have several verbs in flight
+    # when the box dies, and returning only the oldest silently strands the rest.
     n = Nucleus(tmp_path, "r1/role/0")
     n.append("action", {"verb": "ask", "prompt": "p"}, idem="a1")
     p = n.pending()
-    assert p is not None and p["idem"] == "a1" and p["prompt"] == "p"
+    assert len(p) == 1 and p[0]["idem"] == "a1" and p[0]["prompt"] == "p"
     n.append("outcome", {"text": "x"}, idem="a1")
-    assert n.pending() is None
+    assert n.pending() == []
+    n.close()
+
+
+def test_pending_reports_every_stranded_verb(tmp_path: Path) -> None:
+    """Two actions in flight, one settled: the survivor list is exactly the unsettled one."""
+    n = Nucleus(tmp_path, "r1/role/0")
+    n.append("action", {"verb": "ask", "prompt": "one"}, idem="a1")
+    n.append("action", {"verb": "produce", "goal": "two"}, idem="a2")
+    assert [p["idem"] for p in n.pending()] == ["a1", "a2"]
+    n.append("outcome", {"text": "done"}, idem="a1")
+    assert [p["idem"] for p in n.pending()] == ["a2"]
     n.close()
 
 
@@ -40,7 +53,8 @@ def test_rebuild_from_ledger(tmp_path: Path) -> None:
         n.append("percept", {"i": i})
     n.close()
     # reopen: the index is rebuilt from the ledger (truth) on open.
+    # Since N1' the ledger is anchored, so seq 1 is genesis and the five appends are 2..6.
     n2 = Nucleus(tmp_path, "r1/role/0")
-    assert n2._max_seq() == 5
-    assert n2.rebuild() == 5
+    assert n2._max_seq() == 6
+    assert n2.rebuild() == 6
     n2.close()
