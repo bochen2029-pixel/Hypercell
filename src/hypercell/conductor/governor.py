@@ -12,7 +12,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from ..cognition.base import Cognition, CompletionResult, Messages
+from ..cognition.base import CompletionResult
 from .pricebook import Pricebook, Purpose, Quote, default_pricebook
 
 # `_PRICE` is DELETED (slice ECON-S1). It hard-coded twelve providers and, worse, fell back to a
@@ -308,24 +308,7 @@ class Governor:
         return self._sems.get(provider)
 
 
-class MeteredCognition(Cognition):
-    """Wrap any Cognition: enforce the hard-stop before, meter cost after, cap concurrency around."""
-
-    def __init__(self, inner: Cognition, provider: str, gov: Governor) -> None:
-        self.name = f"metered:{inner.name}"
-        self._inner = inner
-        self._provider = provider
-        self._gov = gov
-
-    async def complete(self, messages: Messages, **params: Any) -> CompletionResult:
-        self._gov.check()  # the single hard-stop, before any spend
-        sem = self._gov.semaphore(self._provider)
-        if sem is not None:
-            async with sem:
-                result = await self._inner.complete(messages, **params)
-        else:
-            result = await self._inner.complete(messages, **params)
-        cost = self._gov.record(self._provider, result)
-        # F26 closed: `cost_usd` was declared in v1 and never populated. The receipt now carries a
-        # real number, priced off a dated book.
-        return result.model_copy(update={"cost_usd": cost})
+# `MeteredCognition` lives in `cognition/metered.py` since S-KG-3: it is a Cognition wrapper, so it
+# belongs in the cognition stratum, and keeping it here made the metering seam import L3 -- a
+# forbidden edge LAYER-1 caught. `Governor` satisfies `common.meter.Meter` structurally, with no
+# inheritance and no registration; callers import the seam directly, so ONE-METER-1 can see them.

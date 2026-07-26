@@ -12,7 +12,7 @@ from typing import Any
 import yaml
 
 from ..cognition.base import Cognition
-from ..cognition.registry import build_cognition
+from ..cognition.metered import build_adapter
 from ..common.types import Depth, Role
 from .frame import assemble
 from .loop import VerbExecutor
@@ -124,7 +124,7 @@ def build_cell(home: str, claim_id: str, role: Role) -> Cell:
     zero, which is the kind of rounding the falsifier exists to prevent.
     """
     nucleus = None if role.depth is Depth.d0 else Nucleus(home, claim_id)
-    return Cell(role, nucleus, build_cognition(role.provider))
+    return Cell(role, nucleus, build_adapter(role.provider))
 
 
 def main() -> None:

@@ -5,7 +5,8 @@ from typing import Any
 import pytest
 
 from hypercell.cognition.base import Cognition, CompletionResult, Messages
-from hypercell.conductor.governor import BudgetExceeded, Governor, MeteredCognition
+from hypercell.cognition.metered import MeteredCognition
+from hypercell.conductor.governor import BudgetExceeded, Governor
 
 
 class BigCostStub(Cognition):

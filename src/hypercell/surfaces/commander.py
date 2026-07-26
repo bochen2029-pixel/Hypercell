@@ -7,6 +7,7 @@ is the Homeworld-fleet-commander surface: talk, don't memorize flags.
 from __future__ import annotations
 
 import json
+import os
 import re
 import socket
 import subprocess
@@ -14,9 +15,10 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from ..cognition.registry import build_cognition
+from ..cognition.metered import metered
 from ..common import ids
 from ..common.types import ProviderConfig
+from ..conductor.governor import Governor
 
 _CHAT = (
     "You are hypercell, a sovereign swarm-compute fabric the operator commands like a fleet. "
@@ -113,7 +115,12 @@ async def talk_loop(home: str, provider: str, model: str, watch: bool = True) ->
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[union-attr]
     except Exception:
         pass
-    router = build_cognition(ProviderConfig(provider=provider, model=model))
+    # METERED. This router used to call a provider directly, so every routing turn and every
+    # chit-chat reply spent dollars nothing booked — an un-metered path in the one surface an
+    # operator uses most. VERB-1's AST sweep found it. The governor makes the spend visible and the
+    # hard-stop reachable; `metered()` is the only construction site (ONE-METER-1).
+    _router_gov = Governor(usd_cap=float(os.environ.get("HYPERCELL_ROUTER_CAP_USD", "1.0")))
+    router = metered(ProviderConfig(provider=provider, model=model), _router_gov)
     print(f"hypercell commander  |  provider={provider}  |  home={home}")
     if watch:
         print(f"  {_ensure_viewer(home)}")

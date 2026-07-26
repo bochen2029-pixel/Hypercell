@@ -10,10 +10,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from ...cell.runtime import Cell, build_cell
+from ...cognition.metered import MeteredCognition
 from ...common import ids
 from ...common.types import Outcome, ProviderConfig, Role
 from ...medium.bus import open_medium
-from ..governor import BudgetExceeded, Governor, MeteredCognition
+from ..governor import BudgetExceeded, Governor
 from .converge import run_oracle
 from .schedule import Arm, ucb1
 from .topology import _ANGLES

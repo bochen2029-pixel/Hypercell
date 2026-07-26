@@ -8,9 +8,6 @@ from __future__ import annotations
 import os
 
 from ..common.types import ProviderConfig
-from .base import Cognition
-from .mock import MockCognition
-from .openai_compat import OpenAICompatCognition
 
 # OpenAI-compatible endpoints. Override per role with provider.base_url when a region/edition differs.
 PROVIDER_DEFAULTS: dict[str, str] = {
@@ -25,7 +22,7 @@ PROVIDER_DEFAULTS: dict[str, str] = {
 }
 
 
-def _resolve_key(cfg: ProviderConfig) -> str:
+def resolve_key(cfg: ProviderConfig) -> str:
     ref = cfg.key_ref or f"{cfg.provider.upper()}_API_KEY"
     key = os.environ.get(ref)
     if not key:
@@ -35,25 +32,8 @@ def _resolve_key(cfg: ProviderConfig) -> str:
     return key
 
 
-def build_cognition(cfg: ProviderConfig) -> Cognition:
-    provider = cfg.provider.lower()
-    if provider in ("mock", "echo"):
-        return MockCognition(model=cfg.model)
-    if provider in ("anthropic", "gemini"):
-        raise NotImplementedError(
-            f"provider '{provider}' needs its thin native adapter (P0.2 TODO); "
-            "the OpenAI-compatible providers work today."
-        )
-    base_url = cfg.base_url or PROVIDER_DEFAULTS.get(provider)
-    if not base_url:
-        raise RuntimeError(
-            f"unknown provider '{cfg.provider}' and no base_url given; "
-            "set provider.base_url to any OpenAI-compatible endpoint."
-        )
-    return OpenAICompatCognition(
-        base_url=base_url,
-        api_key=_resolve_key(cfg),
-        model=cfg.model,
-        name=cfg.provider,
-        default_params=cfg.params,
-    )
+# `build_cognition` USED TO LIVE HERE and constructed adapters directly. It moved to
+# `cognition/metered.py` at slice S-KG-3 so there is exactly ONE construction site, which
+# ONE-METER-1 enforces by AST. The null it replaces is per-call-site wrapping: whoever forgets to
+# wrap gets free tokens, and that is where F25 came from -- a judge panel spun up its own adapters
+# and every judge dollar went unbooked.

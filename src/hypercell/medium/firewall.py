@@ -22,49 +22,19 @@ pages, act results, the cell's own memories — is data.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Any
 
-TrustTag = Literal["control", "data"]
-Channel = Literal[
-    "operator_command",
-    "peer_message",
-    "tool_result",
-    "retrieved_page",
-    "act_result",
-    "own_nucleus",
-]
-
-#: The ONLY source of control tokens. Widening this set is a constitutional change, not a tweak.
-CONTROL_CHANNEL: Channel = "operator_command"
-
-#: Channels whose content the cell did not author and did not witness being authored.
-ACQUIRED_CHANNELS = frozenset({"peer_message", "tool_result", "retrieved_page", "act_result"})
-
-#: Fields a sender might try to supply to promote itself. Stripped at ingress, always.
-FORGEABLE_FIELDS = frozenset({"trust_tag", "trust", "channel", "origin", "provenance", "control"})
-
-
-def assign_tag(channel: str | None) -> TrustTag:
-    """The coarse decision, binary and structural: `control` iff the operator directive channel.
-
-    Absent or unknown ⇒ `data`. Fail-closed is not caution here, it is the only safe default: an
-    unrecognised channel is exactly what a novel attack looks like.
-    """
-    return "control" if channel == CONTROL_CHANNEL else "data"
-
-
-def strip_supplied_provenance(body: Any) -> tuple[Any, list[str]]:
-    """Remove any provenance a sender tried to supply. Returns `(clean, stripped_keys)`.
-
-    A cell cannot write its own `trust_tag` any more than it can write its own `seq`.
-    """
-    if not isinstance(body, dict):
-        return body, []
-    stripped = sorted(k for k in body if k in FORGEABLE_FIELDS)
-    if not stripped:
-        return body, []
-    return {k: v for k, v in body.items() if k not in FORGEABLE_FIELDS}, stripped
-
+# The tag VOCABULARY is a stratum (`common/trust.py`) so L1 may speak it without importing L2 --
+# LAYER-1 clause C1. Enforcement -- deciding at ingress what a message actually is -- stays here.
+from ..common.trust import (  # noqa: F401  (re-exported: medium is the tag law's public face)
+    ACQUIRED_CHANNELS,
+    CONTROL_CHANNEL,
+    FORGEABLE_FIELDS,
+    Channel,
+    TrustTag,
+    assign_tag,
+    strip_supplied_provenance,
+)
 
 # ---------------------------------------------------------------------------- the lethal trifecta
 

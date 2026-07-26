@@ -84,8 +84,15 @@ class VerbExecutor:
         if stored is not None:
             return VerbResult(body=dict(stored), idem=idem, replayed=True)
 
-        body = {"verb": verb, **(action or {})}
-        self.nucleus.append("action", body, idem=idem)
+        # ---- INTENT, journaled ONCE per idem. A resume re-enters here with the same idem, and
+        # re-journaling would write a second `action` for one verb: three records where NUC-9 says
+        # two, and a fold that counts intents would double-count every crash. act.md §6.4 says the
+        # same thing for the HOLD path in as many words — "no re-journal". Resume is reconstruction,
+        # not replay, so the intent that already exists IS the intent.
+        already = any(p["idem"] == idem for p in self.nucleus.pending())
+        if not already:
+            body = {"verb": verb, **(action or {})}
+            self.nucleus.append("action", body, idem=idem)
 
         # Drill hook (HC-2): die AFTER the action, BEFORE the outcome — the crash-mid-verb case a
         # resume has to survive. Kept at the seam so it drills every verb, not just `ask`.

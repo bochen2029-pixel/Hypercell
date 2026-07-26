@@ -20,7 +20,8 @@ import pytest
 import yaml
 
 from hypercell.cognition.base import CompletionResult
-from hypercell.conductor.governor import Governor, MeteredCognition
+from hypercell.cognition.metered import MeteredCognition
+from hypercell.conductor.governor import Governor
 from hypercell.conductor.pricebook import (
     Pricebook,
     PricebookError,
@@ -257,19 +258,28 @@ def _adapter_constructions() -> list[str]:
     return sorted(sites)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="ONE-METER-1 is BORN RED at a'. `cognition/metered.py` does not exist yet — adapters are "
-    "still constructed in registry.py. The seam lands at b' with S-KG-3 (the one-verb executor), "
-    "and strict=True means CI will fail the moment this starts passing, which is the signal to "
-    "delete this marker rather than let a scheduled falsifier quietly go green unnoticed.",
-)
 def test_one_meter_only_metered_py_constructs_adapters() -> None:
-    """AST: only `cognition/metered.py` may construct a provider adapter."""
-    offenders = [s for s in _adapter_constructions() if not s.startswith("cognition\\metered.py")]
+    """AST: only `cognition/metered.py` may construct a provider adapter.
+
+    **This was born red at ECON-S1 and went green at S-KG-3.** It carried an
+    `xfail(strict=True)` with the reason written out, so the moment the seam landed CI failed with
+    XPASS and told us to delete the marker — which is exactly what a scheduled falsifier is for. A
+    bar that quietly starts passing has stopped being a schedule.
+    """
+    offenders = [
+        site
+        for site in _adapter_constructions()
+        if not site.replace("\\", "/").startswith("cognition/metered.py")
+    ]
     assert offenders == [], f"un-metered adapter constructions: {offenders}"
 
 
-def test_one_meter_1_is_measuring_something_real() -> None:
-    """The xfail above must be red for a REAL reason, not because the AST walk found nothing."""
+def test_the_guarded_adapter_list_is_read_from_the_seam_not_copied() -> None:
+    """The drill reads metered.py's own tuple, so adding an adapter there cannot silently widen the hole."""
+    from hypercell.cognition.metered import ADAPTER_CLASSES
+
+    assert set(ADAPTER_CLASSES) <= {"OpenAICompatCognition", "MockCognition", "EchoCognition"}
     assert _adapter_constructions(), "the AST walk found no adapter constructions at all"
+
+
+

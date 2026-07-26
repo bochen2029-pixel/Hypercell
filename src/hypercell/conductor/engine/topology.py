@@ -12,12 +12,12 @@ from typing import Any
 
 from ...cell.runtime import Cell, build_cell
 from ...cognition.base import Cognition
-from ...cognition.registry import build_cognition
+from ...cognition.metered import MeteredCognition, build_adapter
 from ...common import ids
 from ...common.types import Outcome, ProviderConfig, Role
 from ...medium.bus import open_medium
 from ...medium.transport_local import LocalMedium
-from ..governor import BudgetExceeded, Governor, MeteredCognition
+from ..governor import BudgetExceeded, Governor
 from .converge import run_oracle
 from .judge import judge_score
 
@@ -159,7 +159,7 @@ async def run_tournament(
 
     judge_ctx: tuple[Cognition, int] | None = None
     if is_judge:
-        judge_ctx = (build_cognition(ProviderConfig(provider=provider, model=model)), judge)
+        judge_ctx = (build_adapter(ProviderConfig(provider=provider, model=model)), judge)
 
     if cells is None:
         roles = _roster(n, provider, model, base_prompt, diversify)

@@ -30,7 +30,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from ..common.canon import canon_bytes
-from ..medium.firewall import CONTROL_CHANNEL, Channel, TrustTag, assign_tag, strip_supplied_provenance
+from ..common.trust import CONTROL_CHANNEL, Channel, TrustTag, assign_tag, strip_supplied_provenance
 
 FRAME_VERSION = "frame_v1"
 

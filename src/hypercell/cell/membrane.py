@@ -8,6 +8,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from ..common.trust import assign_tag, strip_supplied_provenance
 from ..common.types import Message, MessageType
 
 
@@ -17,8 +18,24 @@ def is_directive(msg: Message) -> bool:
 
 
 def as_data(content: str) -> str:
-    """Wrap foreign content so a cell treats it as quoted data, not an instruction."""
+    """Wrap foreign content so a cell treats it as quoted data, not an instruction.
+
+    **Kept as a REDUNDANT render only.** Since SEC-a' the guarantee is structural -- control and
+    data never share a buffer (`cell/frame.py`) -- because a string delimiter is one the attacker
+    may also type. This still runs; it just no longer carries the promise. SEC-1 measured it:
+    this wrap alone leaks 40 of 200 battery cases.
+    """
     return "<<untrusted-data>>\n" + content + "\n<</untrusted-data>>"
+
+
+def tag_at_ingress(channel: str | None, body: Any) -> tuple[str, Any, list[str]]:
+    """Assign the trust tag from the CHANNEL, and strip anything the sender tried to supply.
+
+    Returns `(trust_tag, clean_body, stripped_fields)`. This is the ingress half of the tag law:
+    the Membrane stamps, the nucleus propagates (contracts/identity-firewall.md).
+    """
+    clean, stripped = strip_supplied_provenance(body)
+    return assign_tag(channel), clean, stripped
 
 
 # ---------------------------------------------------------------------------- redaction (N2′)
