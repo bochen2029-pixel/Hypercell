@@ -22,6 +22,7 @@ from .converge import run_oracle
 from .driver import TOPOLOGIES, Convergence, ScoringEvent
 from .judge import judge_score
 from .packets import build_packet
+from .views import view_for
 
 
 @dataclass
@@ -199,10 +200,15 @@ async def run_tournament(
             await asyncio.gather(
                 *(
                     _produce_and_score(
-                        c, goal, peers, sandbox, rnd, oracle_cmd, medium, culture, judge_ctx,
+                        c, goal,
+                        # RE-10: a PARTIAL view. Total view is a broadcast — one confident wrong
+                        # answer reached the whole roster in a single round, and every cell was
+                        # anchored on it by the next. Each candidate now reaches at most half.
+                        view_for(i, peers, n=len(cells), round=rnd),
+                        sandbox, rnd, oracle_cmd, medium, culture, judge_ctx,
                         packet=packet_text,
                     )
-                    for c in cells
+                    for i, c in enumerate(cells)
                 )
             )
         )
