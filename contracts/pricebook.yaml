@@ -1,0 +1,103 @@
+# The pricebook — the DATA artifact `contracts/pricebook.md` governs (slice ECON-S1).
+#
+# This replaces the hard-coded `_PRICE` dict in conductor/governor.py, whose default for an unknown
+# provider was a silent guess of (0.5, 1.5) USD/1M. A guess that never announces itself is the worst
+# kind of number: every downstream total inherits it and nothing says so.
+#
+# Every row is DATED. Prices move, and a price you cannot age is a price you cannot trust.
+version: "5.1.0"
+currency: USD_per_1M_tokens
+
+defaults:
+  max_age_days: 30 # older than this = stale (still usable, priced pessimistically)
+  stale_mult: 1.25 # estimation-only pessimism, applied UPWARD only, never downward
+  refuse_after: 2.0 # lane REFUSED at age > refuse_after x max_age_days
+
+# SKU key: <weights>@<host>/<service_tier>
+# `verified` records whether a human checked the row against the provider's published rates.
+# An unverified row is honest about being unverified rather than quietly authoritative.
+skus:
+  deepseek-chat@deepseek/standard:
+    weights_family: deepseek
+    input: 0.14
+    output: 0.28
+    cache_read: 0.014
+    cache_write: 0.14
+    as_of: "2026-07-16"
+    source: provider-published
+    verified: true
+
+  llama-3.3-70b@cerebras/standard:
+    weights_family: llama
+    input: 0.60
+    output: 0.60
+    as_of: "2026-07-16"
+    source: provider-published
+    verified: true
+
+  gpt-4o-mini@openai/standard:
+    weights_family: gpt-4o
+    input: 0.15
+    output: 0.60
+    cache_read: 0.075
+    as_of: "2026-07-16"
+    source: provider-published
+    verified: true
+
+  glm-4.5-flash@glm/standard:
+    weights_family: glm
+    input: 0.20
+    output: 0.20
+    as_of: "2026-07-16"
+    source: provider-published
+    verified: true
+
+  moonshot-v1-8k@kimi/standard:
+    weights_family: moonshot
+    input: 0.15
+    output: 0.60
+    as_of: "2026-07-16"
+    source: provider-published
+    verified: true
+
+  qwen-plus@qwen/standard:
+    weights_family: qwen
+    input: 0.20
+    output: 0.60
+    as_of: "2026-07-16"
+    source: provider-published
+    verified: true
+
+  grok-2@grok/standard:
+    weights_family: grok
+    input: 2.00
+    output: 10.00
+    as_of: "2026-07-16"
+    source: provider-published
+    verified: true
+
+  # The island floor: local and test lanes are genuinely free, not "priced at zero because we do
+  # not know". The distinction matters — one is a fact, the other is the guess this file deletes.
+  mock@mock/standard:
+    weights_family: none
+    input: 0.0
+    output: 0.0
+    as_of: "2026-07-16"
+    source: local
+    verified: true
+
+  stub@stub/standard:
+    weights_family: none
+    input: 0.0
+    output: 0.0
+    as_of: "2026-07-16"
+    source: local
+    verified: true
+
+  echo@mock/standard:
+    weights_family: none
+    input: 0.0
+    output: 0.0
+    as_of: "2026-07-16"
+    source: local
+    verified: true

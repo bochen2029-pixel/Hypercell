@@ -45,10 +45,19 @@ class OpenAICompatCognition(Cognition):
             data: dict[str, Any] = resp.json()
         choice = data["choices"][0]["message"]["content"] or ""
         usage = data.get("usage", {}) or {}
+        # Cache accounting is spelled differently by each provider; read the shapes we know and
+        # leave the rest at zero rather than inventing a number.
+        details = usage.get("prompt_tokens_details", {}) or {}
+        cache_read = int(details.get("cached_tokens", usage.get("prompt_cache_hit_tokens", 0)) or 0)
+        cache_write = int(usage.get("cache_creation_input_tokens", 0) or 0)
+        reported = usage.get("cost") or usage.get("total_cost")
         return CompletionResult(
             text=choice,
             model=data.get("model", self._model),
             prompt_tokens=int(usage.get("prompt_tokens", 0)),
             completion_tokens=int(usage.get("completion_tokens", 0)),
+            cache_read_tokens=cache_read,
+            cache_write_tokens=cache_write,
+            api_reported_usd=float(reported) if reported is not None else None,
             raw=data,
         )

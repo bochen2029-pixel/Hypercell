@@ -21,6 +21,15 @@ class CompletionResult(BaseModel):
     model: str
     prompt_tokens: int = 0
     completion_tokens: int = 0
+    # Cache usage is priced differently from fresh input on every provider that offers it, so a
+    # meter that cannot see it cannot be truthful. Captured here, priced by conductor/pricebook.py.
+    cache_read_tokens: int = 0
+    cache_write_tokens: int = 0
+    #: The provider's OWN number when it reports one. It is the invoice; our arithmetic is a
+    #: prediction of it, so where they disagree this wins and the gap becomes reconciliation input.
+    api_reported_usd: float | None = None
+    #: Populated by the metering path (F26: dormant in v1 — every receipt was honest about
+    #: everything except its dollars).
     cost_usd: float = 0.0
     raw: dict[str, Any] | None = None
 
