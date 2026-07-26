@@ -306,3 +306,112 @@ def test_the_pragma_block_is_explicit(med: LocalMedium) -> None:
     assert med._db.execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal"
     assert int(med._db.execute("PRAGMA synchronous").fetchone()[0]) == 2  # FULL
     assert int(med._db.execute("PRAGMA busy_timeout").fetchone()[0]) == 5000
+
+
+# ---------------------------------------------------------------- MIG-5 / MIG-3: the version spine
+
+
+def test_mig5_three_unknown_fields_survive_store_and_relay(med: LocalMedium) -> None:
+    """R2 round-trip preservation, 10/10. The null is known-columns storage — the F18 defect.
+
+    A reader that keeps only what it recognises silently truncates every message a newer peer sends,
+    which turns a MINOR upgrade into a data-loss event.
+    """
+    for i in range(10):
+        med.post(
+            "commons", "conductor", "round_open", body={"i": i},
+            future_priority_class="urgent",
+            future_trace={"span": f"s{i}", "nested": [1, 2, {"deep": True}]},
+            future_flags=["a", "b"],
+        )
+
+    got = med.read("commons")
+    assert len(got) == 10
+    for i, msg in enumerate(got):
+        assert msg["future_priority_class"] == "urgent"
+        assert msg["future_trace"] == {"span": f"s{i}", "nested": [1, 2, {"deep": True}]}
+        assert msg["future_flags"] == ["a", "b"]
+
+
+def test_mig5_unknown_fields_are_in_the_chain(med: LocalMedium, fault: FaultInjector) -> None:
+    """A field the chain does not witness could be edited freely and verify() would still pass —
+    which is worse than not chaining at all, because it looks checked."""
+    med.post("commons", "conductor", "round_open", body={}, future_col="original")
+    assert med.verify("commons")["ok"]
+
+    med._db.execute("UPDATE messages SET ext=? WHERE seq=1", ('{"future_col": "rewritten"}',))
+    report = med.verify("commons")
+    assert not report["ok"] and report["first_bad_seq"] == 1
+
+
+def test_mig5_relay_re_emits_byte_identically(med: LocalMedium) -> None:
+    """Poll a record and post it back: the unknown fields must make the round trip unchanged."""
+    med.post("commons", "conductor", "round_open", body={"x": 1}, unknown_a=1, unknown_b={"z": [3]})
+    original = med.read("commons")[0]
+
+    extras = {k: v for k, v in original.items() if k.startswith("unknown_")}
+    med.post("commons", "conductor", "round_open", body=original["body"], **extras)
+    relayed = med.read("commons")[1]
+
+    assert {k: relayed[k] for k in extras} == extras
+
+
+def test_mig3_a_matching_census_admits(med: LocalMedium) -> None:
+    from hypercell.common.census import census
+    from hypercell.medium.spine import admit_spawn
+
+    receipt = admit_spawn(census())
+    assert receipt["admitted"] is True and not receipt["skew"]
+
+
+def test_mig3_a_newer_major_is_refused_with_a_receipt() -> None:
+    """The census gate. A newer MAJOR is a message this build would MIS-READ, not merely fail to."""
+    from hypercell.common.census import census
+    from hypercell.medium.spine import CensusRefusal, admit_spawn, check_census
+
+    image = census()
+    image["wire"] = "6.0.0"
+
+    receipt = admit_spawn(image)
+    assert receipt["admitted"] is False
+    assert receipt["reason"] == "census_newer_major"
+    assert "MIS-READ" in receipt["detail"]
+
+    with pytest.raises(CensusRefusal):
+        check_census(image)
+
+
+def test_mig3_a_minor_skew_is_legal() -> None:
+    """Rolling upgrades exist. Refusing a MINOR would make every upgrade a full-fleet stop."""
+    from hypercell.common.census import census
+    from hypercell.medium.spine import check_census
+
+    image = census()
+    image["wire"] = "5.9.0"
+    verdict = check_census(image)
+    assert verdict.ok and verdict.skew == {"wire": ("5.1.0", "5.9.0")}
+
+
+def test_mig3_an_unknown_contract_and_a_partial_census_are_both_refused() -> None:
+    from hypercell.common.census import census
+    from hypercell.medium.spine import admit_spawn
+
+    unknown = census() | {"quantum_plane": "1.0.0"}
+    assert admit_spawn(unknown)["reason"] == "census_unknown_contract"
+
+    partial = census()
+    del partial["oracle"]
+    assert admit_spawn(partial)["reason"] == "census_partial"
+
+
+def test_fleet_versions_folds_the_spread() -> None:
+    """A fleet running two MINORs is legal during a rolling upgrade — SEEING it is the point."""
+    from hypercell.medium.spine import fleet_versions
+
+    spread = fleet_versions([
+        {"body": {"contract": {"wire": "5.1.0"}}},
+        {"body": {"contract": {"wire": "5.1.0"}}},
+        {"body": {"contract": {"wire": "5.2.0"}}},
+        {"body": {"not": "a census"}},
+    ])
+    assert spread == {"wire": {"5.1.0": 2, "5.2.0": 1}}

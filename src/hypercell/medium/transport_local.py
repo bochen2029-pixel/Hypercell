@@ -90,6 +90,10 @@ class LocalMedium:
               reply_to INTEGER, round INTEGER, priority INTEGER DEFAULT 0,
               origin TEXT, idem TEXT, corr TEXT, mentions TEXT,
               body TEXT, artifact TEXT, hash TEXT,
+              -- R2 reader liberality (MIG-5): fields this build has never heard of are stored
+              -- VERBATIM, not dropped. Known-columns storage silently truncates every message a
+              -- newer peer sends, which makes a MINOR upgrade a data-loss event (F18).
+              ext TEXT,
               void_by_acl INTEGER DEFAULT 0,
               PRIMARY KEY (culture, seq));
             CREATE UNIQUE INDEX IF NOT EXISTS idx_idem ON messages(culture, sender, idem)
@@ -129,6 +133,7 @@ class LocalMedium:
         mentions: list[str] | None = None,
         artifact: dict[str, Any] | None = None,
         _bypass_acl: bool = False,
+        **unknown: Any,
     ) -> Posted:
         """Append one record. Enforces the ACL, the body cap, idem dedup, and the chain.
 
@@ -185,11 +190,14 @@ class LocalMedium:
                 "body": body,
                 "artifact": artifact,
             }
+            # Unknown fields ride at the top level so they enter the LEAF: a field the chain does
+            # not witness is a field an upgrade could rewrite without breaking verify().
+            record.update(unknown)
             new_hash = "sha256:" + chain_step(head_hash, leaf(record)).hex()
             self._db.execute(
                 "INSERT INTO messages(culture,seq,ts,sender,recipient,type,reply_to,round,priority,"
-                "origin,idem,corr,mentions,body,artifact,hash,void_by_acl)"
-                " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "origin,idem,corr,mentions,body,artifact,hash,ext,void_by_acl)"
+                " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     culture, seq, record["ts"], sender, recipient, msg_type, reply_to, round, priority,
                     origin, idem, corr,
@@ -197,6 +205,7 @@ class LocalMedium:
                     encoded,
                     json.dumps(artifact, ensure_ascii=False) if artifact else None,
                     new_hash,
+                    json.dumps(unknown, ensure_ascii=False) if unknown else None,
                     1 if void else 0,
                 ),
             )
@@ -214,7 +223,7 @@ class LocalMedium:
 
     @staticmethod
     def _row_to_msg(row: Any) -> dict[str, Any]:
-        return {
+        msg = {
             "culture": row[0], "seq": int(row[1]), "ts": row[2], "sender": row[3],
             "recipient": row[4], "type": row[5], "reply_to": row[6], "round": row[7],
             "priority": row[8], "origin": row[9], "idem": row[10], "corr": row[11],
@@ -222,8 +231,11 @@ class LocalMedium:
             "body": json.loads(row[13]) if row[13] else None,
             "artifact": json.loads(row[14]) if row[14] else None,
             "hash": row[15],
-            "void_by_acl": bool(row[16]),
+            "void_by_acl": bool(row[17]),
         }
+        if row[16]:
+            msg.update(json.loads(row[16]))
+        return msg
 
     def read(
         self, culture: str, *, since: int = 0, filt: Filter | None = None, include_void: bool = False
@@ -231,7 +243,7 @@ class LocalMedium:
         """Records after `since`, in **seq order always** — priority surfaces, it never reorders."""
         rows = self._db.execute(
             "SELECT culture,seq,ts,sender,recipient,type,reply_to,round,priority,origin,idem,corr,"
-            "mentions,body,artifact,hash,void_by_acl FROM messages "
+            "mentions,body,artifact,hash,ext,void_by_acl FROM messages "
             "WHERE culture=? AND seq>? ORDER BY seq",
             (culture, since),
         ).fetchall()
@@ -277,10 +289,15 @@ class LocalMedium:
         for msg in self.read(culture, include_void=True):
             if msg["void_by_acl"]:
                 void.append(msg["seq"])
-            record = {k: msg[k] for k in (
+            known = (
                 "seq", "ts", "culture", "sender", "recipient", "type", "reply_to", "round",
                 "priority", "origin", "idem", "corr", "mentions", "body", "artifact",
-            )}
+            )
+            record = {k: msg[k] for k in known}
+            # Unknown fields were in the leaf when it was written, so they must be in it now.
+            # Verifying over only the columns THIS build knows would let a future field be edited
+            # freely -- the chain would still verify, which is worse than not chaining at all.
+            record.update({k: v for k, v in msg.items() if k not in known and k not in ("hash", "void_by_acl")})
             expected = "sha256:" + chain_step(head, leaf(record)).hex()
             if expected != msg["hash"]:
                 return {"ok": False, "first_bad_seq": msg["seq"], "void_by_acl": void}
