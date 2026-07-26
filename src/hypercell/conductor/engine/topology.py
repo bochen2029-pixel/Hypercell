@@ -95,12 +95,26 @@ async def _produce_and_score(
     if judge_ctx is not None:  # open task: an independent judge panel scores it (Externality for prose)
         jcog, judges = judge_ctx
         receipt = await judge_score(jcog, goal=goal, candidate_text=code, judges=judges)
-        medium.post(
-            culture, "judges", "judgment", round=rnd,
-            body={"for": cell.role.name, "score": receipt.score, "evidence": receipt.evidence},
-        )
+        graded_by = f"judge-panel/{judges}"
     else:  # checkable task: the external oracle command scores it
         receipt = run_oracle(oracle_cmd, str(path))
+        graded_by = "oracle-cmd"
+
+    # E2, fixed at M1: the grading lands on the Medium as a registry `receipt`, posted by the
+    # conductor. It used to be an off-registry "judgment" from a cell principal, which meant the
+    # oracle's verdict never reached a constitutional fold at all — every certificate and null
+    # ledger downstream was folding over a log that had no gradings in it.
+    medium.post(
+        culture, "conductor", "receipt", round=rnd,
+        body={
+            "check": "submission",
+            "subject": {"cell": cell.role.name, "round": rnd},
+            "outcome": receipt.outcome.value if hasattr(receipt.outcome, "value") else str(receipt.outcome),
+            "score": receipt.score,
+            "graded_by": graded_by,
+            "evidence": receipt.evidence,
+        },
+    )
     return Candidate(
         cell=cell.role.name, round=rnd, path=str(path), score=receipt.score, outcome=receipt.outcome
     )
