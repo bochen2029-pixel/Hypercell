@@ -30,8 +30,9 @@ from typing import Any
 from ..common import clock
 from ..common.canon import canon_bytes
 from ..common.ledger import chain_step, leaf
+from .firewall import PostPolicy, check_post
 from .wake import Doorbell, WakeStats, wait
-from .wire import BODY_HARD_CAP, AclDenied, check_acl, is_known
+from .wire import BODY_HARD_CAP, AclDenied, is_known
 
 #: Per-culture chain anchor (wire.md §5.2). Chain-versioned, never wire-versioned: a wire semver
 #: bump must not re-anchor existing chains.
@@ -69,7 +70,10 @@ def _anchor(culture: str) -> bytes:
 class LocalMedium:
     """T0. One SQLite file, one dense sequence per culture, one chain per culture."""
 
-    def __init__(self, home: Path | str) -> None:
+    def __init__(self, home: Path | str, *, policy: PostPolicy | None = None) -> None:
+        #: The post-ACL's conditional rows (R14). Medium-side, so no caller can widen its own row
+        #: by passing a flag; the conductor sets it from the frozen manifest at run open.
+        self.policy = policy or PostPolicy()
         self.dir = Path(home) / "_medium"
         self.dir.mkdir(parents=True, exist_ok=True)
         self._db = sqlite3.connect(self.dir / "medium.db", isolation_level=None)
@@ -146,11 +150,15 @@ class LocalMedium:
 
         void = False
         if _bypass_acl:
-            from .wire import void_at_fold
-
-            void = void_at_fold(msg_type, sender)
+            # C11: whatever the FULL gate would have refused is void at fold. Deciding voidness with
+            # a weaker predicate than the gate uses would leave a gap between "refused" and "does
+            # not count" -- exactly the gap a smuggled record is looking for.
+            try:
+                check_post(culture, sender, msg_type, body=body, policy=self.policy)
+            except AclDenied:
+                void = True
         else:
-            check_acl(msg_type, sender)
+            check_post(culture, sender, msg_type, body=body, policy=self.policy)
 
         encoded = json.dumps(body, ensure_ascii=False) if body is not None else None
         if encoded is not None and len(encoded.encode("utf-8")) > BODY_HARD_CAP:

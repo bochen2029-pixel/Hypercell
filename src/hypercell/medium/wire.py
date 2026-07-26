@@ -73,6 +73,14 @@ REGISTRY: dict[str, TypeSpec] = {
     )
 }
 
+#: Rows whose privilege is CONDITIONAL, not flat (R14). A table of principal classes cannot express
+#: "conductor by default, unless the bytes the run froze declare otherwise", so those rows are
+#: resolved by the security law in `firewall.check_post` — the ONE place allowed to read a row wider
+#: than this table does, and only against the frozen manifest, never against the poster. Listing
+#: them here keeps the table the source of truth: the firewall asserts membership before widening,
+#: so the two cannot drift apart in silence.
+CONDITIONAL_ROWS = frozenset({"round_open"})
+
 #: The warrant-class set — mint-restricted types that CERTIFY a boundary crossing (§3, the HOME).
 #: `oracle_gen`/`compact` are mint-restricted but certify no crossing, so they are excluded.
 NON_MINTABLE = frozenset({"receipt", "act_receipt", "verdict", "command", "cmd_receipt"})
@@ -131,10 +139,22 @@ def durability_of(msg_type: str, body: Any = None) -> Durability:
     return spec.durability
 
 
-def void_at_fold(msg_type: str, sender: str) -> bool:
-    """Would this record be excluded from every constitutional fold? (C11's second half.)"""
+def void_at_fold(
+    msg_type: str, sender: str, *, culture: str = "commons", body: Any = None
+) -> bool:
+    """Would this record be excluded from every constitutional fold? (C11's second half.)
+
+    Delegates to the Stage-1a post-ACL rather than re-deciding with the flat row, so **the void set
+    is exactly the refused set**. Two predicates would leave a gap between "the gate refuses it" and
+    "it does not count", and that gap is the whole prize for a record smuggled past the gate.
+
+    Imported locally: `firewall` states the security law over this table, so it imports this module,
+    not the other way round.
+    """
+    from .firewall import check_post
+
     try:
-        check_acl(msg_type, sender)
+        check_post(culture, sender, msg_type, body=body)
     except AclDenied:
         return True
     return False

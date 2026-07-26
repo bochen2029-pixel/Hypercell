@@ -200,9 +200,30 @@ class ActExecutor:
             self.escrow.draw(resv_id, 0.0)
         return self._write(receipt, idem=corr)
 
+    @property
+    def actor(self) -> str:
+        """The acting cell: the cognition principal that mints the `act` (wire.md §3/§6)."""
+        return self.nucleus.claim_id
+
+    @property
+    def executor_principal(self) -> str:
+        """The world-side witness. A **distinct** principal string, because A5 turns on that.
+
+        At T0 the executor is in-process and the distinctness is convention (red-teamed by HC-7-v2
+        attempt 8); from Stage-1a the post-ACL checks it mechanically, and a receipt whose witness
+        is its own subject is refused.
+        """
+        return f"{self.nucleus.claim_id}/executor"
+
     def _write(self, receipt: ActReceipt, *, idem: str | None = None) -> ActReceipt:
-        """Every outcome is journaled — an ok, a failure, and above all a refusal."""
-        self.nucleus.append("act_receipt", receipt.as_body(), idem=idem or receipt.corr, durability="gold")
+        """Every outcome is journaled — an ok, a failure, and above all a refusal.
+
+        The principals are stamped HERE, not carried on the dataclass: this is the one place the
+        executor's own identity is known and a caller cannot supply it. A receipt that could name
+        its own witness would answer the only question an auditor reads it to ask (SEC-2 / A5).
+        """
+        body = {**receipt.as_body(), "actor": self.actor, "executor": self.executor_principal}
+        self.nucleus.append("act_receipt", body, idem=idem or receipt.corr, durability="gold")
         return receipt
 
     # ---------------------------------------------------------------- reading back
