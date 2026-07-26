@@ -379,3 +379,15 @@ def test_voidness_uses_the_SAME_predicate_as_the_gate(tmp_path: Path) -> None:
         "voidness was decided by a weaker predicate than the gate — the gap between 'refused' "
         "and 'does not count' is what a smuggled record is looking for"
     )
+
+
+def test_void_at_fold_honours_the_self_clock_policy_like_the_gate() -> None:
+    """Without the policy parameter, `wire.void_at_fold` disagreed with the gate on self-clocked
+    cultures -- the exact two-predicate gap the delegation exists to close."""
+    from hypercell.medium.wire import void_at_fold
+
+    declared = PostPolicy(self_clocked_cultures=frozenset({"run-a"}))
+    assert void_at_fold("round_open", "r1/candidate/0", culture="run-a", body={}) is True
+    assert void_at_fold(
+        "round_open", "r1/candidate/0", culture="run-a", body={}, policy=declared
+    ) is False, "void_at_fold ignored the policy and voided a legal self-clocked round_open"

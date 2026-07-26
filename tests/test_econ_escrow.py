@@ -370,3 +370,92 @@ def test_the_hard_stop_refuses_BEFORE_the_call_not_after(tmp_path: Path) -> None
             gov.close_call(rid, "openai", _Result())
 
     assert escrow.committed("run:a") <= 0.0005, "the call that would have breached was let through"
+
+
+# ================================================================ session-audit regressions
+
+
+def test_for_home_returns_one_live_escrow_per_home(tmp_path: Path) -> None:
+    """Two instances over one file each enforce against their own RAM table, blind to each other's
+    LIVE reservations until a restart. Measured before fixing: B hydrated at $0.90, A spent to
+    $0.95, B still enforced against $0.90."""
+    a = Escrow.for_home(tmp_path, cap_usd=CAP, fsync=False)
+    b = Escrow.for_home(tmp_path, cap_usd=CAP, fsync=False)
+    assert a is b, "two live escrows for one home split the cap"
+
+    a.commit(a.reserve(0.95, scope="run:a").resv_id, 0.95)
+    with pytest.raises(EscrowRefused):
+        b.reserve(0.1, scope="run:b")  # b IS a, so it sees the live $0.95
+
+
+def test_a_second_openers_cap_becomes_a_scope_cap_not_a_second_fleet_cap(tmp_path: Path) -> None:
+    """First opener fixes the fleet cap; a later caller expresses its limit as a scope cap."""
+    first = Escrow.for_home(tmp_path, cap_usd=1.0, fsync=False)
+    later = Escrow.for_home(tmp_path, cap_usd=5.0, fsync=False)
+    assert later is first and later.cap_usd == 1.0, "a later opener silently re-capped the fleet"
+
+    later.scope_caps.setdefault("run:big", 5.0)  # the drive() pattern
+    with pytest.raises(EscrowRefused):
+        later.reserve(2.0, scope="run:big")  # its own cap says 5, the FLEET says 1 -- min binds
+
+
+def test_close_call_books_worst_when_the_lane_cannot_be_priced(tmp_path: Path) -> None:
+    """The call HAPPENED and cannot be priced: settle at worst, stay loud. Releasing would leak
+    real spend out of the cap; swallowing would hide the unpriceable lane."""
+    from hypercell.conductor.pricebook import UnknownLane
+
+    class _Unpriced:
+        model, prompt_tokens, completion_tokens = "nosuch-model", 100, 100
+        cache_read_tokens = cache_write_tokens = 0
+        api_reported_usd = None
+
+    escrow = _escrow(tmp_path)
+    gov = Governor(usd_cap=CAP, escrow=escrow, scope="run:a")
+    resv_id = gov.open_call("nosuch", {"model": "nosuch-model", "max_tokens": 100})
+
+    with pytest.raises(UnknownLane):
+        gov.close_call(resv_id, "nosuch", _Unpriced())
+
+    assert escrow.reserved("run:a") == pytest.approx(0.0), "the reservation leaked as HELD forever"
+    assert escrow.committed("run:a") == pytest.approx(CAP), "in-doubt spend was not booked at worst"
+
+
+def test_reserve_group_does_not_swallow_not_reconciled(tmp_path: Path) -> None:
+    """'The escrow does not know its own state yet' must never read as 'budget exhausted'."""
+    first = _escrow(tmp_path)
+    first.commit(first.reserve(0.5, scope="run:a").resv_id, 0.5)
+
+    resumed = _escrow(tmp_path)
+    with pytest.raises(NotReconciled):
+        resumed.reserve_group([("arm0", 0.1), ("arm1", 0.1)])
+
+
+def test_a_resumed_reservations_ttl_restarts_rather_than_inheriting_a_foreign_clock(
+    tmp_path: Path,
+) -> None:
+    """opened_at was the DEAD process's time.monotonic(), whose epoch is undefined across
+    processes by spec -- a TTL against a foreign epoch can sweep instantly or never."""
+    first = _escrow(tmp_path)
+    first.reserve(0.1, cls="res:durable", ttl_s=300.0)
+
+    resumed = _escrow(tmp_path)
+    resumed.reconcile()
+    held = resumed.still_held()
+    assert held, "the res:durable reservation should survive reconcile"
+    assert resumed.sweep() == [], (
+        "a freshly-resumed reservation swept as stale: its TTL was computed against the dead "
+        "process's clock epoch"
+    )
+
+
+def test_the_metered_path_estimates_the_prompt_it_can_see() -> None:
+    """A fixed 8K guess errs LOW on exactly the big-prompt calls that cost the most, and a low
+    estimate reintroduces the F6 overshoot as a booked-but-unprevented overrun."""
+    escrow = _escrow()
+    gov = Governor(usd_cap=CAP, escrow=escrow, scope="run:a")
+
+    small = gov.worst_case_usd({"model": "gpt-4o-mini", "provider": "openai",
+                                "max_tokens": 100, "est_prompt_tokens": 1_000})
+    big = gov.worst_case_usd({"model": "gpt-4o-mini", "provider": "openai",
+                              "max_tokens": 100, "est_prompt_tokens": 400_000})
+    assert big > small * 50, "the prompt estimate does not reach the worst-case price at all"

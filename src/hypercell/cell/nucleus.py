@@ -155,7 +155,9 @@ class Nucleus:
             return False, "no render state - the index has never been folded"
         recorded = str(row[1] or "")
         if not recorded:
-            return False, "render digest not stamped - reopen or fold to stamp it"
+            return False, ("render digest not stamped - it is stamped by the next fold of NEW "
+                           "records, by close(), or by rebuild(); a warm open leaves it "
+                           "untouched on purpose (the digest is O(history))")
         actual = self.render_digest()
         if recorded != actual:
             return False, f"render corrupted: recorded {recorded[:23]}..., recomputed {actual[:23]}..."

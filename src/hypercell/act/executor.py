@@ -154,6 +154,15 @@ class ActExecutor:
     ) -> ActReceipt:
         corr = idem or ids.new_id("act_")
 
+        # ---- step 0: ADMISSION. Before any gate arithmetic: an unadmitted tool is not "failed",
+        # it does not exist yet, and `adapter_error` would hide that behind a transient-looking
+        # reason. The registry declares the gap; the pipeline must refuse in its name.
+        if capability_ref in NOT_YET_ADMITTED:
+            return self._write(self._refusal(
+                corr, capability_ref, "not_admitted",
+                f"{capability_ref} is declared in Annex A but not admitted; its adapter or "
+                "isolation class has not landed (completes at d').", args))
+
         # ---- step 1: GATE. Every refusal below writes a receipt and touches nothing.
         try:
             verdict: GateVerdict = gate(

@@ -140,7 +140,7 @@ def durability_of(msg_type: str, body: Any = None) -> Durability:
 
 
 def void_at_fold(
-    msg_type: str, sender: str, *, culture: str = "commons", body: Any = None
+    msg_type: str, sender: str, *, culture: str = "commons", body: Any = None, policy: Any = None
 ) -> bool:
     """Would this record be excluded from every constitutional fold? (C11's second half.)
 
@@ -154,7 +154,7 @@ def void_at_fold(
     from .firewall import check_post
 
     try:
-        check_post(culture, sender, msg_type, body=body)
+        check_post(culture, sender, msg_type, body=body, policy=policy)
     except AclDenied:
         return True
     return False

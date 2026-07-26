@@ -800,3 +800,59 @@ def test_a_really_killed_executor_reconciles_to_ok_with_zero_re_executions(
 
     ok, why = deliver_outbox.verify_outbox(outbox)
     assert ok, f"the outbox did not survive the kill intact: {why}"
+
+
+# ================================================================ session-audit regressions
+
+
+def test_an_unadmitted_profile_is_refused_at_the_gate_not_failed_at_the_adapter(rig: Rig) -> None:
+    """`adapter_error` looks transient; `not_admitted` names the truth. The registry declared the
+    gap -- the pipeline must refuse in its name, not stumble over the missing adapter."""
+    cell = rig.cell("r1/agent/0")
+    receipt = cell.act("code.run@sandbox", {"source": "print(1)"}, harm_declared="H1")
+    assert receipt.exec == "refused"
+    assert receipt.reason == "not_admitted", f"the gap is hiding behind '{receipt.reason}'"
+
+
+def test_an_orphan_blob_is_caught_by_verify(rig: Rig) -> None:
+    """The crash window between os.link and the manifest rewrite leaves a REAL delivery narration
+    cannot see. One-directional verification read exactly that loss as 'clean'."""
+    deliver_outbox.execute(dict(DELIVERY, effect_key="lineage:root:recorded"))
+    (rig.outbox / "00deadbeef00deadbeef00deadbeef00.json").write_text(
+        json.dumps({"to": "ops@example.test", "effect_key": "lineage:root:orphan"}),
+        encoding="utf-8",
+    )
+    ok, why = deliver_outbox.verify_outbox(rig.outbox)
+    assert not ok and "not in the manifest" in why
+
+
+def test_a_settle_receipt_carries_the_actor_so_the_ledger_can_attribute() -> None:
+    """wager_ledger keys on (claim, lane) -- and settle receipts carried no actor, so every
+    production key was ("", lane). A fold reading a field nobody writes is the F26 shape."""
+    rec = {
+        "kind": "act_receipt", "seq": 1,
+        "body": {"corr": "act_1", "exec": "ok", "capability_ref": "deliver.outbox",
+                 "actor": "r1/agent/0",
+                 "expectation": {"kind": "oracle_cmd", "args": {"checker": "c"},
+                                 "resolve_by": _just_passed()}},
+    }
+    settled = Settler(probes={"oracle_cmd": lambda _e: "HOLDS"}).settle_one(rec)  # type: ignore[dict-item]
+    assert settled["actor"] == "r1/agent/0", "the settle receipt lost the actor"
+
+    ledger = wager_ledger([{"kind": "act_receipt", "body": settled}])
+    assert ("r1/agent/0", "deliver.outbox") in ledger, "attribution fell back to the empty key"
+
+
+def test_a_deadline_in_either_iso_spelling_counts_as_due() -> None:
+    """fromisoformat accepts `...Z` and `...+00:00`; a lexicographic compare across the two
+    mis-orders them, and a wager whose deadline never reads as due silently always wins."""
+    plus_style = (datetime.now(UTC) - timedelta(seconds=5)).isoformat()  # ...+00:00
+    assert "+00:00" in plus_style
+    rec = {
+        "kind": "act_receipt", "seq": 1,
+        "body": {"corr": "act_1", "exec": "ok", "capability_ref": "deliver.outbox",
+                 "expectation": {"kind": "oracle_cmd", "args": {"checker": "c"},
+                                 "resolve_by": plus_style}},
+    }
+    due = Settler(probes={}).unsettled([rec])
+    assert len(due) == 1, "the +00:00 spelling never became due under string comparison"

@@ -65,9 +65,12 @@ async def run_drive(
     # ECON-S2: the budget is a DURABLE FLEET escrow, not a per-run RAM counter. Two runs under one
     # home now share one cap, and a resumed run inherits what it already spent instead of being
     # handed the whole budget again (the L8 leak, which fails in the generous direction).
-    escrow = Escrow(cap_usd=usd_cap, home=home)
+    escrow = Escrow.for_home(home, cap_usd=usd_cap)
     if escrow.needs_reconcile:
         escrow.reconcile()
+    # This run's OWN limit is a scope cap; the fleet cap was fixed by whoever opened the home
+    # first. Both bind -- available() takes the minimum over the chain.
+    escrow.scope_caps.setdefault(f"run:{run_id}", usd_cap)
     gov = Governor(
         usd_cap=usd_cap,
         per_provider_concurrency=per_provider_concurrency or {},

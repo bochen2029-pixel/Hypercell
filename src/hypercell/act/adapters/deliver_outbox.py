@@ -149,7 +149,16 @@ def read_manifest(root: Path | None = None) -> dict[str, Any]:
 
 
 def verify_outbox(root: Path | None = None) -> tuple[bool, str]:
-    """Does the manifest still describe the files on disk? Names the first entry that drifted."""
+    """Does the manifest still describe the disk, in BOTH directions? Names the first drift.
+
+    manifest->disk: a listed entry whose blob is missing or altered. disk->manifest: an ORPHAN blob
+    the crash window between `os.link` and the manifest rewrite can leave -- a real delivery that
+    narration cannot see, which one-directional verification would read as "clean".
+
+    (The manifest rewrite is single-writer by design at T0: one executor principal per home. When
+    the executor becomes a separate concurrent principal at d', the rewrite needs a lock or the
+    manifest becomes a fold over the blobs -- the blobs already carry everything it records.)
+    """
     root = root or outbox_dir()
     doc = read_manifest(root)
     entries: dict[str, Any] = doc.get("entries", {})
@@ -166,6 +175,12 @@ def verify_outbox(root: Path | None = None) -> tuple[bool, str]:
         actual = "sha256:" + hashlib.sha256(blob.read_bytes()).hexdigest()
         if actual != meta["sha256"]:
             return False, f"{meta['entry']} does not match its manifest digest"
+    listed = {str(meta["entry"]) for meta in entries.values()}
+    for blob in sorted(root.glob("*.json")):
+        if blob.name == "manifest.json" or blob.name in listed:
+            continue
+        return False, (f"{blob.name} is in the outbox but not in the manifest - a delivery "
+                       "narration cannot see (crash between link and manifest rewrite)")
     return True, f"outbox clean: {len(entries)} delivered, {recomputed[:23]}..."
 
 

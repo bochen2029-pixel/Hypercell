@@ -154,6 +154,20 @@ def _parse(ts: str) -> datetime:
     return datetime.fromisoformat(ts.replace("Z", "+00:00"))
 
 
+def _due(resolve_by: str, now: str) -> bool:
+    """Deadline comparison by PARSED time, never by string.
+
+    The gate accepts both `...Z` and `...+00:00` spellings (fromisoformat does), so the fold must
+    too: a lexicographic compare across the two formats mis-orders them, and a wager whose deadline
+    never reads as due is a wager that silently always wins. Unparseable input counts as due, so it
+    gets graded (and expires) LOUDLY instead of floating forever.
+    """
+    try:
+        return _parse(resolve_by) <= _parse(now)
+    except ValueError:
+        return True
+
+
 # ---------------------------------------------------------------------------- settlement (§4.3)
 
 
@@ -197,7 +211,7 @@ class Settler:
             exp = body.get("expectation")
             if not isinstance(exp, dict) or str(body.get("corr")) in settled:
                 continue
-            if str(exp.get("resolve_by", "")) <= stamp:
+            if _due(str(exp.get("resolve_by", "")), stamp):
                 out.append(rec)
         return out
 
@@ -216,7 +230,10 @@ class Settler:
         probe = self.probes.get(exp.kind)
         outcome: Outcome = probe(exp) if probe else "UNDECIDABLE"
 
-        late = _parse(stamp) > _parse(exp.resolve_by) + timedelta(seconds=self.late_grace_s)
+        try:
+            late = _parse(stamp) > _parse(exp.resolve_by) + timedelta(seconds=self.late_grace_s)
+        except ValueError:
+            late = True  # an unparseable deadline cannot vouch for timeliness; expired beats guessed
         if outcome == "HOLDS":
             result: Settlement = "ok" if (not late or spec.late_check == "valid") else "expired"
         elif outcome == "FAILS":
@@ -233,6 +250,10 @@ class Settler:
             "graded_by": f"resolver:{exp.kind}",
             "resolved_at": stamp,
             "capability_ref": body.get("capability_ref", ""),
+            # The actor rides along so `wager_ledger` can attribute per (claim, lane) from settle
+            # receipts ALONE. Without this the fold keyed on "" for every production record -- a
+            # rule reading a field nobody writes, which is the F26 shape one more time.
+            "actor": body.get("actor", ""),
         }
         if result == "miss":
             # `on_miss` names a consequence; it never rolls anything back. Compensation is a NEW act

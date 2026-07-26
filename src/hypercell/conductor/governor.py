@@ -12,11 +12,11 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, ClassVar, Literal
 
 from ..cognition.base import CompletionResult
 from .ledger import EscrowLedger
-from .pricebook import Pricebook, Purpose, Quote, default_pricebook
+from .pricebook import Pricebook, Purpose, Quote, UnknownLane, default_pricebook
 
 # `_PRICE` is DELETED (slice ECON-S1). It hard-coded twelve providers and, worse, fell back to a
 # silent `(0.5, 1.5)` guess for anything else — an undated number that every downstream total
@@ -153,6 +153,33 @@ class Escrow:
         if self.ledger is not None:
             self._hydrate()
 
+    # ---------------------------------------------------------------- one escrow per home
+
+    _BY_HOME: ClassVar[dict[str, Escrow]] = {}
+    _BY_HOME_LOCK: ClassVar[threading.Lock] = threading.Lock()
+
+    @classmethod
+    def for_home(cls, home: Path | str, *, cap_usd: float = 1.0, **kw: Any) -> Escrow:
+        """The ONE live escrow for a home. Constructing two over one file splits the cap.
+
+        Measured before fixing: instance B hydrated at $0.90, instance A then spent to $0.95, and
+        B still enforced against $0.90 -- two tables, one file, each blind to the other's LIVE
+        reservations until a restart. Jointly they can exceed the cap each believes it holds.
+
+        Within a process this registry closes that. ACROSS processes the file is append-shared and
+        durable, but live mutual visibility waits for S-KG-4's fold-hydration; until then one
+        process per home is the honest deployment shape. The first opener fixes the fleet cap; a
+        later caller with a different number gets the existing instance and must express its own
+        limit as a SCOPE cap (drive() does exactly that).
+        """
+        key = str(Path(home).resolve())
+        with cls._BY_HOME_LOCK:
+            inst = cls._BY_HOME.get(key)
+            if inst is None:
+                inst = cls(cap_usd=cap_usd, home=home, **kw)
+                cls._BY_HOME[key] = inst
+            return inst
+
     # ---------------------------------------------------------------- resume (ECON-L8)
 
     def _hydrate(self) -> None:
@@ -164,7 +191,12 @@ class Escrow:
                 resv_id=rid, scope=str(row["scope"]), cls=row["cls"], worst=float(row["worst"]),
                 committed=float(row["committed"]), state=row["state"],
                 lane=str(row["lane"]), holder=str(row["holder"]),
-                opened_at=float(row["opened_at"] or 0.0), ttl_s=float(row["ttl_s"]),
+                # NOT the recorded opened_at: that was the DEAD process's time.monotonic(),
+                # whose epoch is undefined across processes by spec. A TTL computed against a
+                # foreign epoch can sweep instantly or never. Rebasing restarts the clock, which
+                # errs toward holding a stale reservation slightly longer -- and reconcile(), not
+                # the sweeper, is the resume path's real cleanup anyway.
+                opened_at=self._now(), ttl_s=float(row["ttl_s"]),
             )
         self._seq = len(self.reservations)
         # A fold that found records means this process INHERITED a budget rather than opening one.
@@ -276,6 +308,8 @@ class Escrow:
             for name, worst in requests:
                 try:
                     admitted.append(self.reserve(worst, scope=scope, cls=cls, holder=name))
+                except NotReconciled:
+                    raise  # not a funding refusal: the escrow does not know its own state yet
                 except EscrowRefused as exc:
                     refused.append((name, worst, str(exc)))
         return Admission(admitted=admitted, refused=refused)
@@ -432,8 +466,9 @@ class Governor:
     def worst_case_usd(self, params: dict[str, Any]) -> float:
         """The pessimistic ceiling for one call, priced off the dated book.
 
-        Deliberately pessimistic: it assumes the model emits `max_tokens` and prices the prompt at
-        the output rate when it cannot see one. An estimate that errs low would reintroduce the
+        Deliberately pessimistic: it assumes the model emits `max_tokens`; the prompt estimate is
+        the caller's, and the metered path supplies a chars/4 floor when none is given. An
+        estimate that errs LOW would still reintroduce the
         overshoot it exists to prevent, and an over-reservation costs only headroom that is
         released seconds later. N4' sharpens this with `est_tokens_total` from the frame manifest.
         """
@@ -472,7 +507,16 @@ class Governor:
             if resv_id is not None and self.escrow is not None:
                 self.escrow.release(resv_id, "call did not complete")
             return 0.0
-        usd = self.record(provider, result)
+        try:
+            usd = self.record(provider, result)
+        except UnknownLane:
+            # The call HAPPENED and cannot be priced. In-doubt spend is real spend: settle the
+            # reservation at its worst case -- never release, never guess low -- then re-raise so
+            # the unpriceable lane stays loud (it is deliberately crippling; see worst_case_usd).
+            # Releasing here would leak real spend out of the cap; swallowing would hide the lane.
+            if resv_id is not None and self.escrow is not None:
+                self.escrow.commit(resv_id, self.escrow.reservations[resv_id].worst)
+            raise
         if resv_id is not None and self.escrow is not None:
             self.escrow.commit(resv_id, usd)
         return usd

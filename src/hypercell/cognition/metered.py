@@ -80,7 +80,8 @@ class MeteredCognition(Cognition):
         # RESERVE the worst case, then call, then settle at the truth. `check()` alone was F6: it
         # compares a counter to a cap before a call it cannot price, so the last call goes over and
         # the hard-stop reports the breach it failed to prevent.
-        resv_id = self._gov.open_call(self._provider, {**params, "model": self._model})
+        est = {"est_prompt_tokens": max(64, sum(len(str(m)) for m in messages) // 4)}
+        resv_id = self._gov.open_call(self._provider, {**est, **params, "model": self._model})
         try:
             sem = self._gov.semaphore(self._provider)
             if sem is not None:

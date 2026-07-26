@@ -123,9 +123,10 @@ async def talk_loop(home: str, provider: str, model: str, watch: bool = True) ->
     # The router shares the fleet escrow at `home`, so router chatter draws on the same dollars the
     # runs do. A separate RAM cap per surface is how a fleet ends up over budget with every
     # individual counter under its own limit.
-    _escrow = Escrow(cap_usd=_cap, home=home)
+    _escrow = Escrow.for_home(home, cap_usd=_cap)
     if _escrow.needs_reconcile:
         _escrow.reconcile()
+    _escrow.scope_caps.setdefault("purpose:router", _cap)
     _router_gov = Governor(usd_cap=_cap, escrow=_escrow, scope="purpose:router")
     router = metered(ProviderConfig(provider=provider, model=model), _router_gov)
     print(f"hypercell commander  |  provider={provider}  |  home={home}")
