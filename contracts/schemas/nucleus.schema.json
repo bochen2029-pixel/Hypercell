@@ -1,0 +1,422 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "hypercell/contracts/nucleus/5.1.0",
+  "title": "nucleus -- the cell's ledger record envelope and the 19-kind taxonomy",
+  "$comment": "Generated mirror of contracts/nucleus.md v5.1.0 (P3 resolution) -- the .md is the source of truth; regenerate on any bump (CONTRACT-HDR-1).",
+  "description": "Root = one ledger record (nucleus.md sec 2: JSONL, one per line, UTF-8, append-only). The 19 kind bodies (sec 3 taxonomy, 4 families, closed) are $defs keyed by kind name. Reader liberality (G4): emitters write exactly the envelope shape; readers MUST ignore unknown fields and unknown kinds (folds return state unchanged), never error, and preserve unknown fields on re-serialize. Kind bodies are modeled from the sec 3 'body essentials' column and are therefore open (additionalProperties true).",
+  "type": "object",
+  "properties": {
+    "v": { "const": 5, "$comment": "nucleus contract major (sec 2)" },
+    "seq": { "type": "integer", "minimum": 1, "$comment": "1-based, dense, monotonic. THE order. Never order by ts (sec 2)" },
+    "ts": { "type": "string", "$comment": "UTC ISO-8601 ms (common/clock.py); informational only" },
+    "kind": {
+      "enum": ["percept", "decision", "action", "outcome", "genesis", "checkpoint", "nucleus.stats", "parked", "repair", "contract_bump", "memory.assert", "memory.supersede", "memory.retract", "memory.pin", "memory.forget", "memory.recall", "frame", "fork.child", "consolidation"],
+      "$comment": "sec 3 taxonomy -- 19 kinds, 4 families (io/control/memory/structure), closed at emit; unknown kinds ignored by folds at read. Removed v0.1 kinds: handoff, system"
+    },
+    "idem": { "type": ["string", "null"], "$comment": "nullable; the exactly-once key (read-barrier: outcome_for(idem))" },
+    "refs": { "type": "array", "items": { "type": "integer" }, "$comment": "prior seqs this record depends on (strictly < seq; only the past is citable -- sec 6.1 rule 2)" },
+    "red": {
+      "type": ["array", "null"],
+      "items": {
+        "type": "object",
+        "properties": { "path": { "type": "string" }, "rule": { "type": "string" } },
+        "additionalProperties": false
+      },
+      "$comment": "OPTIONAL redaction note, ANY kind -- the membrane redacted body content pre-append; absence is auditable (identity-firewall.md owns the rule set)"
+    },
+    "body": { "$comment": "kind-specific (sec 3; $defs below). A body > 8 KB or binary becomes an artifact spill {artifact: {rel, sha256, bytes, mime}} (sec 2; $defs/artifact_spill)" },
+    "prev": { "type": "string", "$comment": "previous record's hash (hex). Anchors: root cells prev0 = sha256('hypercell/nucleus-chain/1' 0x00 claim_id); forked children prev0 = parent.hash(at_seq). Chain constant versioned independently of this contract" },
+    "hash": { "type": "string", "$comment": "chain column -- construction is wire.md sec 5.1's, the ONE home (canon #11: leaf = sha256(canon(record sans hash/sig)); hash_n = sha256(raw32(prev) concat raw32(leaf))); this contract CITES it and never restates it. canon = RFC-8785 JCS (common/canon.py, shared with the Medium chain)" }
+  },
+  "required": ["v", "seq", "ts", "kind", "prev", "hash"],
+  "additionalProperties": false,
+  "$defs": {
+    "artifact_spill": {
+      "type": "object",
+      "$comment": "sec 2 artifact spill -- the record hash covers the artifact's sha256, so tamper-evidence extends to spilled bytes",
+      "properties": {
+        "rel": { "type": "string", "$comment": "e.g. artifacts/sha256-<hex>" },
+        "sha256": { "type": "string" },
+        "bytes": { "type": "integer" },
+        "mime": { "type": "string" }
+      },
+      "required": ["rel", "sha256"],
+      "additionalProperties": false
+    },
+    "census": {
+      "type": "object",
+      "$comment": "genesis contract census (sec 1): ALWAYS the FULL 9-TUPLE -- all nine contract axes at EVERY depth that has a ledger at all (d0 has none; s2-34). A partial census is refused at spawn, never defaulted. In-chain => tamper-evident => foldable",
+      "properties": {
+        "wire": { "type": "string" },
+        "nucleus": { "type": "string" },
+        "role": { "type": "string" },
+        "run": { "type": "string" },
+        "oracle": { "type": "string" },
+        "act": { "type": "string" },
+        "pricebook": { "type": "string" },
+        "command": { "type": "string" },
+        "identity-firewall": { "type": "string" }
+      },
+      "required": ["wire", "nucleus", "role", "run", "oracle", "act", "pricebook", "command", "identity-firewall"],
+      "additionalProperties": false
+    },
+    "percept": {
+      "type": "object",
+      "$comment": "io family (sec 3). Trust tags are stamped by the membrane at ingress, before append -- the firewall contract owns stamping rules; this contract owns propagation. A record whose trust tag is absent reads as external (fail-closed). R13 legacy mapping applies to PRE-ADOPTION records only (seq < chain_adopted_at_seq, resting on the s6-12 signed baseline): source operator -> trust operator, every other legacy percept -> external; post-adoption absent -> external, no source fallback, ever (sec 14 rule 2)",
+      "properties": {
+        "source": { "enum": ["operator", "medium", "tool", "wake", "resume"] },
+        "trust": { "enum": ["operator", "receipted", "tool", "external"] },
+        "medium": {
+          "type": "object",
+          "properties": { "culture": { "type": "string" }, "seq": { "type": "integer" } },
+          "additionalProperties": false
+        },
+        "content": { "$comment": "content or artifact spill" },
+        "artifact": { "$ref": "#/$defs/artifact_spill" },
+        "part": {
+          "type": "object",
+          "properties": { "i": { "type": "integer" }, "n": { "type": "integer" } },
+          "additionalProperties": false
+        },
+        "reason": { "type": "string", "$comment": "source=wake: waking is perceiving -- percept{source: wake, body:{reason, waited_ms, filter}} (sec 3)" },
+        "waited_ms": { "type": "number", "$comment": "source=wake" },
+        "filter": { "$comment": "source=wake" }
+      },
+      "required": ["source"],
+      "additionalProperties": true
+    },
+    "decision": {
+      "type": "object",
+      "$comment": "io family (sec 3) -- model-authored choice (d2+, OPTIONAL); DECISION-CLASS for the register wall (sec 6.1)",
+      "properties": {
+        "chosen": { "$comment": "the choice made" },
+        "why": { "type": "string" },
+        "options": { "type": "array" }
+      },
+      "additionalProperties": true
+    },
+    "action": {
+      "type": "object",
+      "$comment": "io family (sec 3) -- gold if H1+ (LAW-FSYNC-EFFECT, sec 4); args ride inline ('{verb, args...}')",
+      "properties": {
+        "verb": { "type": "string" },
+        "harm_class": { "type": "string" },
+        "capability_ref": { "type": "string" },
+        "cost_est": { "type": "object" }
+      },
+      "required": ["verb"],
+      "additionalProperties": true
+    },
+    "outcome": {
+      "type": "object",
+      "$comment": "io family (sec 3) -- gold iff its action was gold; the read-barrier's stored answer (outcome_for(idem))",
+      "properties": {
+        "of": { "type": "string", "$comment": "the verb this outcome answers" },
+        "result": { "$comment": "result or artifact spill" },
+        "artifact": { "$ref": "#/$defs/artifact_spill" },
+        "model": { "type": "string" },
+        "usage": {
+          "type": "object",
+          "properties": {
+            "prompt": { "type": "integer" },
+            "completion": { "type": "integer" },
+            "cache_read": { "type": "integer" }
+          },
+          "additionalProperties": true
+        },
+        "cost": {
+          "type": "object",
+          "properties": { "usd_micro": { "type": "integer" }, "wall_ms": { "type": "integer" } },
+          "additionalProperties": true,
+          "$comment": "nucleus-local cost shape: integer micro-USD and integer ms (sec 2 canon note -- floats are cross-language canon hazards); distinct from the Medium cost{} field-group"
+        },
+        "error": { "$comment": "present on failure" }
+      },
+      "required": ["of"],
+      "additionalProperties": true
+    },
+    "genesis": {
+      "type": "object",
+      "$comment": "control family; seq 1, exactly once, gold (sec 1). A spawn against a claim-id with prior Medium receipts but no genesis (or failing chain verify) MUST be REFUSED",
+      "properties": {
+        "claim": { "type": "string", "$comment": "claim-id run/role/index" },
+        "lineage_root": { "type": "string", "$comment": "own claim if root; inherited if forked" },
+        "role_digest": { "type": "string", "$comment": "sha256(canon(role manifest)) at instantiation" },
+        "contract": { "$ref": "#/$defs/census" },
+        "created_by": { "enum": ["conductor", "operator"] },
+        "run_id": { "type": "string" },
+        "forked_from": {
+          "anyOf": [
+            { "type": "null" },
+            {
+              "type": "object",
+              "properties": {
+                "claim": { "type": "string" },
+                "seq": { "type": "integer" },
+                "head_hash": { "type": "string" },
+                "parent_sealed_segment_digest": { "type": "string" }
+              },
+              "additionalProperties": false
+            }
+          ]
+        },
+        "prefix_ref": {
+          "anyOf": [
+            { "type": "null" },
+            {
+              "type": "object",
+              "$comment": "the borrowed-segment manifest (sec 10 step 4): LOGICAL prefix; hardlink is a same-filesystem fast path only",
+              "properties": {
+                "segments": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": { "segment_id": { "type": "string" }, "content_hash": { "type": "string" } },
+                    "additionalProperties": false
+                  }
+                },
+                "partial": {
+                  "type": "object",
+                  "properties": { "segment_id": { "type": "string" }, "upto_seq": { "type": "integer" } },
+                  "additionalProperties": false
+                }
+              },
+              "additionalProperties": false
+            }
+          ]
+        },
+        "chain_adopted_at_seq": { "type": "integer", "$comment": "synthetic genesis (HONEST-EPOCH, sec 1): records < k are immutable-but-unhashed and the contract says so" },
+        "pre_adoption_root": { "type": "string", "$comment": "s6-12 (MUST at migration): RFC-6962 Merkle root over the pre-adoption records (seq < chain_adopted_at_seq, canon bytes), bound into the OPERATOR-SIGNED synthetic genesis -- post-migration tampering of the unhashed region is detectable against a signed baseline; the R13 legacy trust-tag read and the signed export (identity-firewall.md B.7) rest on it" }
+      },
+      "required": ["claim", "lineage_root", "role_digest", "contract", "created_by"],
+      "additionalProperties": true
+    },
+    "checkpoint": {
+      "type": "object",
+      "$comment": "control family (sec 3) -- gold when ack-bearing (LAW-FSYNC-ACK); a cell's Medium cursor advances ONLY inside a checkpoint (LAW-CURSOR-IN-CHECKPOINT, sec 4)",
+      "properties": {
+        "state": { "type": "object" },
+        "medium_cursor": { "type": "object", "additionalProperties": { "type": "integer" }, "$comment": "{culture: seq}" }
+      },
+      "additionalProperties": true
+    },
+    "nucleus.stats": {
+      "type": "object",
+      "$comment": "control family (sec 3/12) -- written by the nucleus itself, one per checkpoint or per 512 appends; feeds NUC-7 tier bars",
+      "properties": {
+        "span": { "type": "array", "items": { "type": "integer" }, "minItems": 2, "maxItems": 2, "$comment": "[lo, hi]" },
+        "appends": { "type": "integer" },
+        "p50_ns": { "type": "number" },
+        "p95_ns": { "type": "number" },
+        "bytes": { "type": "integer" },
+        "fsyncs": { "type": "integer" },
+        "group_commits": { "type": "integer" }
+      },
+      "additionalProperties": true
+    },
+    "parked": {
+      "type": "object",
+      "$comment": "control family (sec 3/10) -- gold; metadata, NEVER load-bearing for resume (a crash-park writes nothing and resume works identically)",
+      "properties": {
+        "reason": { "type": "string" },
+        "by_run": { "type": "string" },
+        "final_score": { "type": "number" }
+      },
+      "additionalProperties": true
+    },
+    "repair": {
+      "type": "object",
+      "$comment": "control family (sec 3/8) -- gold; written by the nucleus on open after a torn tail moves to ledger.torn-<ts>",
+      "properties": {
+        "torn_bytes": { "type": "integer" },
+        "after_seq": { "type": "integer" },
+        "quarantined_to": { "type": "string" }
+      },
+      "additionalProperties": true
+    },
+    "contract_bump": {
+      "type": "object",
+      "$comment": "control family (sec 1/3) -- gold; a version transition appended INSIDE the chain (outside it a version epoch can be retro-claimed)",
+      "properties": {
+        "from": { "$comment": "prior version/census" },
+        "to": { "$comment": "new version/census" },
+        "migration_note": { "type": "string" }
+      },
+      "additionalProperties": true
+    },
+    "memory.assert": {
+      "type": "object",
+      "$comment": "memory family (sec 3/6) -- grounding refs ride the envelope refs[]; factual requires validated grounding (VALIDATE-FACTUAL-ASSERT, sec 6.1); default register is narrative",
+      "properties": {
+        "memory_id": { "type": "string" },
+        "register": { "enum": ["factual", "narrative"] },
+        "content": { "type": "string" },
+        "s": { "type": "string" },
+        "p": { "type": "string" },
+        "o": { "type": "string" },
+        "entities": { "type": "array" },
+        "valid_from": { "type": "string" },
+        "valid_to": { "type": "string" },
+        "xrefs": { "type": "array", "items": { "type": "string" }, "$comment": "cross-boundary URIs; medium:// admissible iff the referenced type is in the wire registry's NON-MINTABLE (warrant-class) set -- wire.md sec 3 names it (the HOME; this contract cites it and never hard-codes it: the mint-restricted types that CERTIFY a boundary crossing); act://corr ok; https:// rejected unless resolvable to the act that fetched it (sec 6.1 rule 4)" }
+      },
+      "required": ["memory_id", "register", "content"],
+      "additionalProperties": true
+    },
+    "memory.supersede": {
+      "type": "object",
+      "$comment": "memory family (sec 3/6) -- assert body + target_memory_id; atomic replace; old version stays queryable as-of the past",
+      "properties": {
+        "memory_id": { "type": "string" },
+        "register": { "enum": ["factual", "narrative"] },
+        "content": { "type": "string" },
+        "s": { "type": "string" },
+        "p": { "type": "string" },
+        "o": { "type": "string" },
+        "entities": { "type": "array" },
+        "valid_from": { "type": "string" },
+        "valid_to": { "type": "string" },
+        "xrefs": { "type": "array", "items": { "type": "string" } },
+        "target_memory_id": { "type": "string" }
+      },
+      "required": ["target_memory_id"],
+      "additionalProperties": true
+    },
+    "memory.retract": {
+      "type": "object",
+      "$comment": "memory family (sec 3/6)",
+      "properties": {
+        "target_memory_id": { "type": "string" },
+        "mode": { "enum": ["ended", "error"] },
+        "valid_to": { "type": "string" },
+        "reason": { "type": "string" }
+      },
+      "required": ["target_memory_id"],
+      "additionalProperties": true
+    },
+    "memory.pin": {
+      "type": "object",
+      "$comment": "memory family (sec 3/6) -- consolidation-immune + S0-eligible; over pin_budget => E_PIN_BUDGET",
+      "properties": {
+        "target_memory_id": { "type": "string" },
+        "on": { "type": "boolean" },
+        "order": { "type": "number" }
+      },
+      "required": ["target_memory_id"],
+      "additionalProperties": true
+    },
+    "memory.forget": {
+      "type": "object",
+      "$comment": "memory family (sec 3/6) -- render tombstone; the ledger retains (true erasure: identity-firewall.md)",
+      "properties": {
+        "target_memory_id": { "type": "string" },
+        "reason": { "type": "string" }
+      },
+      "required": ["target_memory_id"],
+      "additionalProperties": true
+    },
+    "memory.recall": {
+      "type": "object",
+      "$comment": "memory family (sec 3/6) -- journaled READ; no fold consumes it. Minted only by the MODEL-INITIATED verb: assembly-time RECALL_ASSEMBLY (sec 7.3) is UNJOURNALED -- the frame manifest's segments[S4].items IS its durable record",
+      "properties": {
+        "query": { "type": "string" },
+        "k": { "type": "integer" },
+        "filters": { "type": "object" },
+        "results": { "type": "array", "items": { "type": "string" }, "$comment": "memory_ids" },
+        "render": { "type": "string" },
+        "render_head_seq": { "type": "integer" }
+      },
+      "additionalProperties": true
+    },
+    "frame": {
+      "type": "object",
+      "$comment": "structure family -- the frame manifest (sec 7.2 step 9 / 7.5); written by the assembler at standard durability; the audit query ('why did the cell not know X at tick t') reads segments[].items vs dropped",
+      "properties": {
+        "tick": { "type": "integer" },
+        "ledger_head": { "type": "integer", "$comment": "h -- the ledger head seq candidates were gathered at" },
+        "window": {
+          "type": "object",
+          "properties": {
+            "context": { "type": "integer" },
+            "max_output": { "type": "integer" },
+            "W_use": { "type": "integer" }
+          },
+          "additionalProperties": true
+        },
+        "segments": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": { "type": "string" },
+              "class": { "enum": ["stable", "semi", "volatile"] },
+              "sha256": { "type": "string" },
+              "tokens": { "type": "integer" },
+              "items": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "ref": { "type": "string" },
+                    "tokens": { "type": "integer" },
+                    "salience": { "type": "number" }
+                  },
+                  "additionalProperties": true
+                }
+              },
+              "dropped": { "type": "array", "$comment": "each drop {ref, tok, salience, reason} (sec 7.2 step 5)" }
+            },
+            "additionalProperties": true
+          }
+        },
+        "prefix_hash_stable": { "type": "string" },
+        "prefix_hash_semi": { "type": "string" },
+        "est_tokens_total": { "type": "integer" },
+        "versions": {
+          "type": "object",
+          "properties": {
+            "assembler": { "type": "string" },
+            "salience": { "type": "string" },
+            "estimator": { "type": "string" }
+          },
+          "additionalProperties": true
+        },
+        "digest": { "type": "string", "$comment": "sha256(frame)" }
+      },
+      "additionalProperties": true
+    },
+    "fork.child": {
+      "type": "object",
+      "$comment": "structure family (sec 3/10) -- gold; the parent side of a fork (child side = its genesis.forked_from); lineage lives in BOTH ledgers",
+      "properties": {
+        "child_claim": { "type": "string" },
+        "at_seq": { "type": "integer" },
+        "reason": { "type": "string" },
+        "run_id": { "type": "string" }
+      },
+      "required": ["child_claim", "at_seq"],
+      "additionalProperties": true
+    },
+    "consolidation": {
+      "type": "object",
+      "$comment": "structure family (sec 3/11) -- gold on install; a failing digest NEVER installs; installs happen only at task boundaries (the cache seam)",
+      "properties": {
+        "span": { "type": "array", "items": { "type": "integer" }, "minItems": 2, "maxItems": 2 },
+        "digest_artifact": { "$comment": "REEL 5-field digest artifact ref, pre-chunked <= 512 tok" },
+        "asserts": { "type": "array", "items": { "type": "integer" }, "$comment": "seqs of proposed memory.asserts" },
+        "cold_eyes": {
+          "type": "object",
+          "properties": {
+            "family": { "type": "string" },
+            "verdict": { "type": "string", "$comment": "pass|fail" },
+            "score": { "type": "number" }
+          },
+          "additionalProperties": true,
+          "$comment": "L2 rotates per pass over the available !=L1 set (sec 11 step 4)"
+        },
+        "installed": { "type": "boolean" }
+      },
+      "required": ["span", "installed"],
+      "additionalProperties": true
+    }
+  }
+}

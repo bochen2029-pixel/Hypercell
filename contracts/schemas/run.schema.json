@@ -1,0 +1,297 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "hypercell/contracts/run/5.1.0",
+  "title": "run -- the run manifest (run.yaml v5), with the certificate as a $def",
+  "$comment": "Generated mirror of contracts/run.md v5.1.0 (P3 resolution) -- the .md is the source of truth; regenerate on any bump (CONTRACT-HDR-1).",
+  "description": "Root = run.yaml v5 (run.md R1), the declarative unit of swarm work; canonicalized (RFC-8785 over the YAML-parsed object), frozen at run_open, refuse-on-mutation (R1.2). Operator-boundary STRICT (template R5) for the 5.1.0 emit shape -- additionalProperties false; the Conductor REFUSES unknown MAJOR and warns+ignores unknown MINOR fields at read (R1 schema line, R12). Absent-field defaults are R1's, never reader-invented. $defs carry the R8.1 certificate (the output type of the named fold).",
+  "type": "object",
+  "properties": {
+    "schema": { "type": "string", "$comment": "e.g. hypercell.run/5.0 -- Conductor REFUSES unknown MAJOR, warns+ignores unknown MINOR fields" },
+    "run_id": { "type": "string", "$comment": "stable; claim-ids derive: <run_id>/<slot>/<index>[+fork<k>] (R1.1 rule 5)" },
+    "goal": { "type": "string", "$comment": "operator's wording VERBATIM (F1: wording is a diversity axis; the null arm receives THIS wording -- R7)" },
+    "class_hints": { "type": "array", "items": { "type": "string" }, "$comment": "optional operator hint to the intake classifier (R6)" },
+    "topology": { "enum": ["tournament", "mcts", "pipeline", "mapreduce", "fanout", "free-swarm"], "$comment": "a policy row over ONE driver, never a loop (R3); SIX values -- the R3 table prints seven rows because tournament x ucb is a dispatch PRESET, never a seventh topology (s2-23); convergent rows REQUIRE oracle + realized weights_family count >= 2 + injected arm-zero (R1.1 rule 1)" },
+    "roster": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "slot": { "type": "string", "$comment": "slot names unique; claim-id = run/slot/index (R1.1 rule 5); defaults to the role stem (R12)" },
+          "role": { "type": "string", "$comment": "pinned at run_open -> ...@sha256:... (R1.1 rule 4)" },
+          "count": { "type": "integer" },
+          "diversity": {
+            "type": "object",
+            "$comment": "PER-SLOT diversity vector (A6): declared here, MEASURED at round 1 (divergence floor D3)",
+            "properties": {
+              "weights_family": { "type": "array", "items": { "type": "string" }, "$comment": "cell i <- family[i mod |families|]" },
+              "wording_variant": { "type": "array", "items": { "type": "string" }, "$comment": "ids into the role's variant table" },
+              "seed": { "anyOf": [{ "const": "auto" }, { "type": "array" }], "$comment": "auto -> distinct per cell; or an explicit list (reproducibility)" },
+              "temperature": { "type": "array", "items": { "type": "number" } },
+              "on_missing": { "enum": ["shrink", "refuse"], "$comment": "missing family key at open; weights are NEVER silently substituted" }
+            },
+            "additionalProperties": false
+          },
+          "refiner_mode": { "enum": ["fresh", "persistent"], "$comment": "round-structured topologies only (R5.3): fresh = new cells each round reading the frontier (no self-anchoring); persistent = nuclei carried (stateful tasks). Fold-visible, certificate-recorded" },
+          "lane_prefs": {
+            "type": "object",
+            "properties": {
+              "effort": { "type": "string" },
+              "batch": { "$comment": "e.g. allowed" }
+            },
+            "additionalProperties": true,
+            "$comment": "hints; econ floats host/effort/cache/batch, MUST NOT float weights (the diversity axis)"
+          }
+        },
+        "required": ["role"],
+        "additionalProperties": false
+      },
+      "$comment": "arm-zero MAY be declared; if omitted the Conductor INJECTS it for every convergent topology (R7)"
+    },
+    "oracle": {
+      "type": "object",
+      "$comment": "R18: the oracle STACK artifact (contracts/oracle.md sec 3) is THE single home of every trust-side predicate knob -- exactly five in convergence: {target, tolerance, divergence_eps, contested_blocks_champion, contested_cap}, plus growth{} and the probe pin -- frozen at run open; the manifest MUST NOT restate them (two homes is the F14 drift class). EXCEPTION [R25]: null_arm is a NULL POLICY, not a trust predicate -- it lives in this manifest's null: block, never in the stack; stable_k is a MANIFEST knob (termination{})",
+      "properties": {
+        "ref": { "type": "string", "$comment": "oracles/<id>@sha256:... -- the stack artifact" },
+        "gen": { "type": "integer", "$comment": "generation PIN; scores compare only within a generation (A12)" },
+        "invalid_rate_halt": { "type": "number", "exclusiveMinimum": 0, "maximum": 1, "$comment": "RESTORED v2 sec 5 R%: INVALID rate > R% => HALT oracle-sick (never converge on the minority that graded); R1.1 rule 6" }
+      },
+      "required": ["ref"],
+      "additionalProperties": false
+    },
+    "grounding": { "enum": ["none", "sampled", "required"], "$comment": "A11. Floor keyed to oracle kind: judged => required is the legal minimum; tighten only (R1.1 rule 3)" },
+    "operator_audit": {
+      "type": "object",
+      "properties": {
+        "sample_rate": { "type": "number", "$comment": "RESTORED v2 sec 5 k%: blind second adjudication of operator-adjudicated cases (mechanics: oracle.md sec 13.1); manifest-declared so the certificate can echo it" }
+      },
+      "additionalProperties": false
+    },
+    "budget": {
+      "type": "object",
+      "properties": {
+        "usd_cap": { "type": "number" },
+        "purposes": {
+          "type": "object",
+          "$comment": "v2 sec 7 split, ENFORCED as escrow scopes (pricebook.md sec 4.6): sum <= usd_cap; oracle_growth <= 0.2 x usd_cap (R1.1 rule 2); verification is a RESERVE production cannot eat (BUDGET-RAZOR)",
+          "properties": {
+            "production": { "type": "number" },
+            "verification": { "type": "number" },
+            "oracle_growth": { "type": "number" },
+            "tool": { "type": "number" },
+            "maintenance": { "type": "number" }
+          },
+          "additionalProperties": false
+        },
+        "per_provider_concurrency": { "type": "object", "additionalProperties": { "type": "integer" }, "$comment": "a REQUEST against fleet-scoped caps (R10)" },
+        "pricebook": { "type": "string", "$comment": "PIN pricebook.yaml@sha256:...; the certificate cites it" }
+      },
+      "additionalProperties": false
+    },
+    "termination": {
+      "type": "object",
+      "$comment": "EVENT-TIME, never wallclock (parking cannot corrupt convergence). KNOB HOME (R18): the MANIFEST owns the termination{} knobs (incl. stable_k), invalid_rate_halt, null:, and operator_audit{}; the oracle stack's convergence: block owns {target, tolerance, divergence_eps, contested_cap, contested_blocks_champion} -- ONE home each (oracle.md sec 3; F14's fix)",
+      "properties": {
+        "max_rounds": { "type": "integer", "$comment": "unit per topology row (R3); positive integer (R1.1 rule 6)" },
+        "stable_k": { "type": "integer", "$comment": "consecutive VALID scoring events with no champion improvement under one gen (F14's one-definition fix); gen bump resets; counted by the run engine; positive integer (R1.1 rule 6)" },
+        "max_gradings": { "type": "integer", "$comment": "absolute oracle-call cap (outermost event bound)" },
+        "self_clock_min_events": { "type": "integer", "$comment": "R14 guard (s6-15): a SELF-CLOCKED round_open is legal only after >= this many new VALID scoring events since the previous round_open; under-frequency rows are VOID-AT-FOLD (round-churn cannot burn max_rounds toward a premature exhausted verdict); default 1" },
+        "wallclock_alarm_s": { "type": "number", "$comment": "an ALARM: fires PARK + operator notice, never a verdict" }
+      },
+      "additionalProperties": false
+    },
+    "null": {
+      "type": "object",
+      "$comment": "R17: this block is oracle.md sec 12.1's NullPolicy block VERBATIM (the ONE grammar home; regenerated by COPY, s2-21); the earlier null_policy:{mode, family, floor, audit_rate} spelling is REPEALED -- one grammar, no translator. [R25] the null policy -- including whether an arm is REQUIRED -- lives HERE, never in the oracle stack's convergence block. The two-mode class lifecycle: UNSETTLED => matched (protected arm outside UCB, matched-dollar reservation at run_open); CALIBRATED => floor (inline arm at floor_frac + audit_rate matched replays). Reservation durability (s6-06): the protected reservation is res:durable-class -- survives park/crash, folds STILL-HELD on resume, or resume re-takes it FIRST; exhaustion with the required null unrun => verdict{exhausted: null-starved}, never a champion",
+      "properties": {
+        "null_arm": { "enum": ["required", "omitted"], "default": "required", "$comment": "[R25] KNOB HOME (manifest side, never the oracle stack's convergence block). required => the Conductor injects arm-zero when the roster omits it, and BUDGET-RAZOR refuses a champion whose null never ran (verdict{exhausted:null-starved}, sec R7.1)." },
+        "mode": { "enum": ["auto", "matched", "floor"], "$comment": "auto = derived from the null ledger at the deepest task-class level (the default and the law); explicit pins are receipted; floor refused for unsettled classes" },
+        "pin": {
+          "type": "object",
+          "$comment": "PRE-REGISTERED strongest-single-family -- NEVER chosen by the machinery under audit (v2 sec 5)",
+          "properties": {
+            "family": { "type": "string" },
+            "provenance": { "enum": ["operator-pin", "ranking-artifact"], "$comment": "the CLOSED canonical pair (oracle.md 12.1, R17; the old 'rank' spelling is gone)" },
+            "ref": { "type": ["string", "null"], "$comment": "grammar: artifact://rankings/...#sha256=... (dated external ranking, facts-with-dates); operator-pin: null" },
+            "as_of": { "type": "string", "$comment": "the date the pin/ranking was taken (facts-with-dates)" }
+          },
+          "additionalProperties": false
+        },
+        "m": { "type": "integer", "$comment": "settledness + flip-evidence threshold the flip predicate P(C) reads (R7.3 / oracle.md 12.4); default 5" },
+        "floor_frac": { "type": "number", "$comment": "floor mode: protected reservation fraction of the production cap, RESERVED at run open; default 0.10" },
+        "audit_rate": { "type": "number", "$comment": "floor mode: fraction of runs followed by a matched-dollar replay (default 0.25 so the trailing k=20 window holds >= m=5 audited rows by construction)" }
+      },
+      "additionalProperties": false
+    },
+    "task_class": {
+      "anyOf": [
+        { "const": "auto", "$comment": "intake computes the FIX-3 hierarchy (R6.2)" },
+        {
+          "type": "object",
+          "properties": {
+            "l0": { "type": "string", "$comment": "sha256(oracle_template | canonical(toolset) | topology_family | goal_schema_sig) -- exact-task" },
+            "l1": { "$comment": "(oracle_template, toolset, topology_family) -- task shape" },
+            "l2": { "$comment": "(information_axis, verification_axis) -- quadrant" }
+          },
+          "additionalProperties": false,
+          "$comment": "an explicit {l0,l1,l2} object overrides WITH a receipt"
+        }
+      ]
+    },
+    "priority": {
+      "type": "object",
+      "$comment": "multi-run fleet scheduling (R10); default class by surface: hc talk -> interactive, hc apply/run -> standard, routines -> maintenance",
+      "properties": {
+        "class": { "enum": ["interactive", "standard", "maintenance"] },
+        "weight": { "type": "number", "$comment": "fair-share weight within the class" },
+        "preemptible": { "type": "boolean", "$comment": "interactive MAY set false" }
+      },
+      "additionalProperties": false
+    },
+    "partial_view": { "type": "boolean", "$comment": "round-structured convergent topologies: MUST default true (R5.2 -- the all-same-diet round is unconstructable)" },
+    "resume": { "enum": ["auto", "manual"], "$comment": "auto: hc resume re-enters (R9)" },
+    "resume_from": { "type": ["string", "null"], "$comment": "import artifacts+history from a prior run_id (new run, new id; R1.2)" },
+    "isolation": { "enum": ["pooled", "isolated", "hardened"], "$comment": "maps to substrate classes 0-3 (seat 09)" }
+  },
+  "required": ["run_id", "goal", "topology"],
+  "additionalProperties": false,
+  "$defs": {
+    "certificate": {
+      "type": "object",
+      "$comment": "run.md R8.1 -- the output type of the named fold (else it is a press release); every field recomputable by hc verify: fold the span, recompute, diff MUST be empty (CERT-1). Fanout runs emit a synthesis report, never a certificate (L-HONEST-VERDICT)",
+      "properties": {
+        "cert_version": { "type": "string", "$comment": "5.1 -- bumped: vs_null lift_*->margin_*, null_usd_* collapsed (R15)" },
+        "run_id": { "type": "string" },
+        "manifest_sha256": { "type": "string" },
+        "topology": { "type": "string" },
+        "verdict_kind": { "enum": ["verified", "verified-with-residual"] },
+        "task_class": {
+          "type": "object",
+          "properties": { "l0": { "type": "string" }, "l1": {}, "l2": {} },
+          "additionalProperties": false
+        },
+        "intake_receipt_seq": { "type": "integer" },
+        "oracle": {
+          "type": "object",
+          "properties": {
+            "id": { "type": "string" },
+            "gen": { "type": "integer" },
+            "digest": { "type": "string" },
+            "lineage": { "type": "array", "items": { "type": "string" } }
+          },
+          "additionalProperties": false
+        },
+        "champion": {
+          "type": "object",
+          "properties": {
+            "arm": { "type": "string" },
+            "claim_id": { "type": "string" },
+            "artifact": {
+              "type": "object",
+              "properties": { "ref": { "type": "string" }, "sha256": { "type": "string" } },
+              "additionalProperties": false
+            },
+            "score": { "type": "number" },
+            "outcome": { "type": "string" },
+            "receipt_seq": { "type": "integer" }
+          },
+          "additionalProperties": false
+        },
+        "convergence": {
+          "type": "object",
+          "properties": {
+            "target": { "type": "number" },
+            "tolerance": { "type": "number" },
+            "stable_events": { "type": "integer" },
+            "stable_k": { "type": "integer" },
+            "divergence": { "type": "number" },
+            "epsilon": { "type": "number" },
+            "probe_corpus": { "type": "string" },
+            "contested": { "type": "boolean" },
+            "contested_streak": { "type": "integer" },
+            "gradings": { "type": "integer" },
+            "invalid_rate": { "type": "number" },
+            "invalid_rate_halt": { "type": "number" }
+          },
+          "additionalProperties": false
+        },
+        "grounding": {
+          "type": "object",
+          "properties": {
+            "mode": { "type": "string" },
+            "citation_precision": { "type": "number" },
+            "domains_per_material_claim_min": { "type": "integer" },
+            "witnessed": { "type": "boolean" }
+          },
+          "additionalProperties": false,
+          "$comment": "the v2 sec 5 sentence, fielded"
+        },
+        "vs_null": {
+          "type": "object",
+          "properties": {
+            "mode": { "type": "string", "$comment": "e.g. matched | floor-inline | floor-audited" },
+            "family": { "type": "string" },
+            "null_score": { "type": "number" },
+            "null_usd": { "type": "number", "$comment": "ONE member (R15/canon #6): a production/invoice usd split is render-side (the R7.2 null ledger keeps the pair locally), never the wire join key" },
+            "margin_production": { "type": "number" },
+            "margin_invoice": { "type": "number", "$comment": "the operator's unit; the flip predicate keys here" },
+            "swarm_usd_invoice": { "type": "number" },
+            "verdict": { "type": "string", "$comment": "swarm-justified | swarm-not-justified (champion=null-arm)" }
+          },
+          "additionalProperties": false,
+          "$comment": "R15 canonical members {null_score, null_usd, margin_production, margin_invoice} -- margin_*, never lift_*; dual-unit accounting at matched-production AND matched-invoice"
+        },
+        "residual": {
+          "type": "object",
+          "properties": {
+            "unprobed": { "type": "array", "items": { "type": "string" } },
+            "ambiguous_escalated": { "type": "array" },
+            "unscored": { "type": "array", "$comment": "BUDGET-RAZOR: unscored submissions excluded from champion selection, LISTED here" },
+            "invalid_count": { "type": "integer" },
+            "apparatus_usd": { "type": "number", "$comment": "apparatus-INVALID spend folds run-level, never to arm.usd_spent (R2.5)" },
+            "panel_dissent": { "$comment": "null or the dissent figure" },
+            "diversity": {
+              "type": "object",
+              "properties": {
+                "declared": { "type": "array", "items": { "type": "string" } },
+                "realized": { "type": "array", "items": { "type": "string" } },
+                "round1_divergence": { "type": "number" },
+                "floor": { "type": "number" },
+                "defect": { "type": "boolean", "$comment": "true under an operator diversity waiver (R1.1 rule 1)" }
+              },
+              "additionalProperties": false
+            },
+            "views_law": { "type": "string", "$comment": "partial-view law held every round (RE-10 recompute)" }
+          },
+          "additionalProperties": false
+        },
+        "spend": {
+          "type": "object",
+          "properties": {
+            "production": { "type": "number" },
+            "verification": { "type": "number" },
+            "oracle_growth": { "type": "number" },
+            "tool": { "type": "number" },
+            "total": { "type": "number" },
+            "pricebook": { "type": "string" },
+            "in_doubt": { "type": "number" }
+          },
+          "additionalProperties": false,
+          "$comment": "certificate spend recompute is a TWO-LOG consistency check: Medium cost{} groups vs conductor-ledger escrow folds MUST agree (R11)"
+        },
+        "recompute": {
+          "type": "object",
+          "properties": {
+            "culture": { "type": "string" },
+            "span": { "type": "array", "items": { "type": "integer" }, "minItems": 2, "maxItems": 2 },
+            "chain_head": { "type": "string" },
+            "procedure": { "type": "string", "$comment": "hc verify <run_id>" }
+          },
+          "additionalProperties": false
+        },
+        "signature": { "type": "object", "additionalProperties": true, "$comment": "[SECURITY-SEAM: cert-signing] -- seat 10: Stage-1b conductor key over the canonicalized cert body; verify procedure and key custody in identity-firewall.md (prose-deferred)" }
+      },
+      "required": ["cert_version", "run_id"],
+      "additionalProperties": false
+    }
+  }
+}

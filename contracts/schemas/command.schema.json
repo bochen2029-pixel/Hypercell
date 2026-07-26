@@ -1,0 +1,280 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "hypercell/contracts/command/5.1.0",
+  "title": "command -- the CommandEnvelope and the cmd_receipt body",
+  "$comment": "Generated mirror of contracts/command.md v5.1.0 (P3 resolution) -- the .md is the source of truth; regenerate on any bump (CONTRACT-HDR-1).",
+  "description": "Root = oneOf the CommandEnvelope (sec 1.1 -- the body of a Medium type=command posted to _ops; wire.md owns the outer envelope and cites this file for the body, schema-by-reference) and the cmd_receipt body (sec 3 -- conductor-only, phases ack/progress/result over cmd_id; everything receipted including refusals). Emit/read: emitters mint STRICTLY (registry verbs, schema-valid fields -- hence additionalProperties false); readers are liberal on fields (unknown fields round-trip unmodified) and CLOSED on verbs (unknown verb => refused(invalid)). Sec 1.3 defaults are FROZEN for MAJOR 5. R3 fallbacks: unknown verb -> refuse-typed; unknown field -> preserve; unknown refused_class/outcome/state value from a NEWER minor -> render verbatim, treat as non-terminal unless phase says result. $defs also carry the narration struct (sec 3.2) and the routine spec (sec 6.1). The command.kind registry (sec 2 -- THE one home; wire.md 3.1 delegates here) is modeled at $defs/command_kind: envelope kinds (directive, grant, cancel), governance kinds (contract_bump, migration_epoch, stage_bump, key_rotate, adjudication, errata), fleet-decision kinds (flip, grant, revoke, park, resume -- R22, posted to _fleet), and the six operator-statute kinds (oracle.seal, oracle.errata, oracle.control, oracle.adjudicate, null.pin, crucible.resume -- s6-10, each with a Stage-1b operator-signature slot). Non-envelope kinds share the command type's ACL, never the sec 1 envelope schema.",
+  "oneOf": [
+    { "$ref": "#/$defs/command_envelope" },
+    { "$ref": "#/$defs/cmd_receipt" }
+  ],
+  "$defs": {
+    "command_kind": {
+      "enum": ["directive", "grant", "cancel", "contract_bump", "migration_epoch", "stage_bump", "key_rotate", "adjudication", "errata", "flip", "revoke", "park", "resume", "oracle.seal", "oracle.errata", "oracle.control", "oracle.adjudicate", "null.pin", "crucible.resume"],
+      "$comment": "command.md sec 2 -- THE one command.kind registry (wire.md 3.1 delegates here; no copy exists). kind-addition = a command.md MINOR, zero wire-registry impact (ruling #692). grant/cancel appear in both the envelope and fleet-decision classes; culture disambiguates the reader (act-plane grant posts to _ops, fleet-decision grant to _fleet). Fleet-decision kinds flip|grant|revoke|park|resume are conductor-only, D-gold, R-forever (R22); the six operator-statute kinds (s6-10) each carry a Stage-1b operator-signature slot -- at/above the trigger an unsigned statute is refused(auth)"
+    },
+    "command_envelope": {
+      "type": "object",
+      "$comment": "command.md sec 1.1 -- every MUTATING operator intent from every surface is one schema-validated CommandEnvelope through one ingress (sec 4); reads are NEVER commands (sec 7)",
+      "properties": {
+        "cmd_id": {
+          "type": "string",
+          "maxLength": 64,
+          "$comment": "REQUIRED. Globally unique forever, SURFACE-minted; interactive surfaces SHOULD mint ULIDs; routine executors MUST mint deterministically rt:<routine_id>:<slot> (sec 6.2). Identity-dedup key (sec 4 step 3) + receipt-chain key + the Stage-1b signing nonce"
+        },
+        "issuer": {
+          "anyOf": [
+            { "const": "operator" },
+            { "const": "conductor" },
+            { "type": "string", "pattern": "^routine/" }
+          ],
+          "$comment": "REQUIRED. Authentication of the STRING is identity-firewall.md's; the unattended ceiling (sec 6.4) keys on it; issuer=conductor is legal ONLY for fabric-internal maintenance envelopes and MUST NOT carry grant/deny (sec 1.2 invariant 4)"
+        },
+        "surface": { "enum": ["cli", "talk", "http", "mcp", "pwa", "routine", "test"], "$comment": "REQUIRED" },
+        "session": { "type": "string", "$comment": "REQUIRED. Surface-session id; scopes supersede (sec 5.2) and conversation state; routine sessions = routine/<id>" },
+        "verb": {
+          "enum": ["run", "drive", "ask", "resume", "pause", "stop", "fire", "grant", "deny", "cancel", "routine.set", "provider.set", "config.set", "maintain"],
+          "$comment": "REQUIRED. CLOSED registry (sec 2): an unknown verb is refused(invalid) naming the table; verbs compile to the seven constitutional verbs"
+        },
+        "params": {
+          "type": "object",
+          "$comment": "REQUIRED. Per-verb typed object, strict-mint (template R5: unknown param field is an error, never an ignored extra). Per-verb field spaces are cited, not duplicated: run = a run-manifest fragment per run.md; grant/deny/cancel consumption semantics = act.md's; fire vars filtered by the routine's subst_whitelist (sec 6.1)"
+        },
+        "params_hash": { "type": "string", "$comment": "REQUIRED. Over RFC-8785 (JCS) canonical form of params; the Conductor RECOMPUTES; mismatch => refused(invalid)" },
+        "utterance": { "type": "string", "$comment": "REQUIRED iff an NL layer produced params: the raw operator text -- provenance for the Entry-30 cross-check; absent for typed surfaces" },
+        "parse": {
+          "type": "object",
+          "$comment": "present iff an NL router produced params (audit of parsing; makes every NL-parsed scalar auditable -- F27's bar)",
+          "properties": {
+            "router_claim": { "type": "string", "$comment": "the d0 router CELL that parsed it (F15: metered, ledgered)" },
+            "model": { "type": "string" },
+            "extractor": { "type": "string", "$comment": "version of the deterministic extractor that ran" },
+            "extracted": { "type": "object", "$comment": "scalars the extractor found in the utterance" },
+            "injected": { "type": "array", "items": { "type": "string" }, "$comment": "scalars the extractor FORCED over router omission" },
+            "inferred": { "type": "array", "items": { "type": "string" }, "$comment": "scalars the router supplied with no utterance evidence" },
+            "defaults_applied": { "type": "array", "items": { "type": "string" }, "$comment": "scalars filled from frozen defaults -- each narrated in ack" }
+          },
+          "additionalProperties": false
+        },
+        "supersedes": { "type": ["string", "null"], "$comment": "OPTIONAL. A cmd_id from the SAME (issuer, session) to cancel-replace while still QUEUED (sec 5.2); superseding a RUNNING command never auto-kills" },
+        "ttl_s": { "type": "number", "default": 600, "$comment": "stale-refusal window; default 600 (stop/grant/deny: 3600); checked queue-side too (sec 4 step 8)" },
+        "budget": {
+          "type": "object",
+          "properties": { "usd_cap": { "type": "number" } },
+          "additionalProperties": false,
+          "$comment": "OPTIONAL overrides; CLAMPED to fleet caps by the governor (pricebook.md); never raises a cap, only lowers"
+        },
+        "dry_run": { "type": "boolean", "default": false, "$comment": "parse + plan + intake-class + econ quote + narrate; execute NOTHING; result carries the plan + quote" },
+        "reply": {
+          "type": "object",
+          "properties": { "detail": { "enum": ["summary", "full"] } },
+          "additionalProperties": false,
+          "$comment": "delivery hint; receipts land on _ops regardless -- reply shapes rendering, never truth"
+        },
+        "contracts": {
+          "type": "object",
+          "$comment": "the surface's census expectation (kernel G3/MIG-SUR): MAJOR mismatch => refused(version) naming both versions; MINOR skew proceeds",
+          "properties": {
+            "wire": { "type": "string" },
+            "nucleus": { "type": "string" },
+            "role": { "type": "string" },
+            "run": { "type": "string" },
+            "oracle": { "type": "string" },
+            "act": { "type": "string" },
+            "pricebook": { "type": "string" },
+            "command": { "type": "string" },
+            "identity-firewall": { "type": "string" }
+          },
+          "additionalProperties": false
+        },
+        "ts_surface": { "type": "string", "$comment": "informational; the AUTHORITATIVE ts is the Medium's at post; never orders anything (sec 1.2 invariant 5)" },
+        "auth": {
+          "anyOf": [
+            { "type": "null" },
+            {
+              "type": "object",
+              "properties": {
+                "alg": { "type": "string", "$comment": "ed25519" },
+                "key_id": { "type": "string" },
+                "sig": { "type": "string", "$comment": "base64(sign(leaf))" }
+              },
+              "additionalProperties": true,
+              "$comment": "field semantics, key custody, and verify() are identity-firewall.md's (schema-by-reference; [SECURITY-SEAM: envelope authentication])"
+            }
+          ],
+          "$comment": "absent => an unsigned Stage-0/1a envelope (legal below the Stage-1b trigger); at/above the trigger the RATCHET law applies: issuer=operator without valid auth => refused(auth)"
+        }
+      },
+      "required": ["cmd_id", "issuer", "surface", "session", "verb", "params", "params_hash"],
+      "additionalProperties": false
+    },
+    "cmd_receipt": {
+      "type": "object",
+      "$comment": "command.md sec 3 -- payload type cmd_receipt (wire registry row 17, conductor-only ACL, smuggled instances VOID-AT-FOLD). Chain: ack -> progress* -> result keyed by cmd_id; everything receipted including refusals; exactly ONE terminal result per cmd_id (alias chains get the result MIRRORED). The degenerate collapse (LB3): for ask (and any verb whose dispatch completes synchronously within the ack window) the chain collapses -- the terminal result doubles as the ack; no separate ack row is posted; the sec 2.1 arithmetic counts this collapsed chain (2 Medium appends). Durability: ack/result D-gold R-forever; progress D-chatter R-decay (operator-facing streaming rides it; run-internal progress stays status). The wire envelope corr carries cmd_id on every cmd_receipt; the body repeats it",
+      "properties": {
+        "cmd_id": { "type": "string" },
+        "phase": { "enum": ["ack", "progress", "result"] },
+        "ack": {
+          "type": "object",
+          "$comment": "phase=ack (D-gold): confirmation-by-narration, emitted BEFORE dispatch (F8: misroutes surface in seconds; stop is one word)",
+          "properties": {
+            "understood": { "type": "string", "$comment": "normalized one-line summary" },
+            "run_id": { "type": "string", "$comment": "pre-minted for run/drive: stop/watch work from second 0" },
+            "defaults": { "type": "array", "items": { "type": "string" }, "$comment": "every default named" },
+            "provenance": { "type": "object", "additionalProperties": { "type": "string" }, "$comment": "per-scalar: stated | default | ... (from the parse block)" },
+            "coalesced_into": { "type": ["string", "null"], "$comment": "alias ack: the primary cmd_id (sec 5.1); the duplicate issuer SEES the coalescing, NEVER silent" },
+            "dry_run": { "type": "boolean" }
+          },
+          "additionalProperties": false
+        },
+        "progress": {
+          "type": "object",
+          "$comment": "phase=progress (D-chatter): state-change-driven; min-interval 2 s per cmd; event-time, never wallclock. input_required = an H2/H3 act parked or a talk clarifying question (maps 1:1 to the MCP task state); recovered emitted at restart for every non-terminal command (SUR-4b)",
+          "properties": {
+            "state": {
+              "enum": ["queued", "spawned", "round_open", "scored", "synthesizing", "converging", "input_required", "parked", "recovered"],
+              "$comment": "R3: an unknown state value read from a NEWER minor is rendered verbatim and treated non-terminal"
+            },
+            "round": { "type": "integer" },
+            "detail": { "type": "object" }
+          },
+          "additionalProperties": false
+        },
+        "result": {
+          "type": "object",
+          "$comment": "phase=result (D-gold; terminal, EXACTLY ONCE per cmd_id). A policy refusal is a result{outcome:refused}, not an HTTP error (this body's enum is command.md's -- THE one outcome enum; wire.md 3.1 delegates here; partial is deleted, no producer)",
+          "properties": {
+            "outcome": { "enum": ["ok", "failed", "refused", "superseded", "expired"], "$comment": "THE one outcome enum (canon #4); no partial" },
+            "refused_class": {
+              "anyOf": [{ "enum": ["invalid", "version", "auth", "policy", "budget", "not_found", "downgrade"] }, { "type": "null" }],
+              "$comment": "iff refused; each refusal a typed result receipt naming its override (sec 4 step 9); downgrade = the Stage-1b ratchet's stripped-signature refusal (identity-firewall.md B.6.3; SEC-3; s2-32)"
+            },
+            "stopped_reason": {
+              "anyOf": [{ "enum": ["converged", "target", "budget", "max_steps", "operator"] }, { "type": "null" }],
+              "$comment": "iff ok"
+            },
+            "refs": { "type": "array", "items": { "type": "string" }, "$comment": "medium:// and file://...#sha256=... pointers" },
+            "summary": { "$ref": "#/$defs/narration" },
+            "cost": {
+              "type": "object",
+              "properties": {
+                "usd_effective": { "type": "number" },
+                "usd_reserved": { "type": "number" },
+                "sku": { "type": "string" },
+                "purpose": { "enum": ["production", "verification", "oracle_growth", "tool", "maintenance"] },
+                "resv_id": { "type": "string" },
+                "pricebook_version": { "type": "string" }
+              },
+              "additionalProperties": false,
+              "$comment": "the canonical cost{} group (R16): members SUBSET-OF the six {usd_effective, usd_reserved, sku, purpose, resv_id, pricebook_version} -- elision is lawful, wrong members are not; wall_ms/tokens are SIBLING receipt fields, never cost{} members; member semantics owned by pricebook.md 5.2. cmd_receipt is in R2's spend crossing set -- the result's cost{} is authoritative for the whole command (W3a)"
+            }
+          },
+          "required": ["outcome"],
+          "additionalProperties": false
+        }
+      },
+      "required": ["cmd_id", "phase"],
+      "additionalProperties": false
+    },
+    "narration": {
+      "type": "object",
+      "$comment": "command.md sec 3.2 -- the narration struct, assembled by CODE from _ops + run-culture reads ONLY; the ONLY source any surface narrates from; fields are first-class receipt/verdict/certificate fields, never prose. Rendering law: a synthesis is never rendered as verified -- the lie would have to live in a schema value (SUR-2)",
+      "properties": {
+        "run_id": { "type": "string" },
+        "verdict_type": { "enum": ["verified", "synthesis", "best_so_far", "none"] },
+        "oracle": { "type": "string", "$comment": "e.g. ipv4_check@g3#a1b2c3" },
+        "champion": {
+          "type": "object",
+          "properties": {
+            "cell": { "type": "string" },
+            "arm": { "type": "string" },
+            "score": { "type": "number" },
+            "target": { "type": "number" }
+          },
+          "additionalProperties": false
+        },
+        "vs_null": {
+          "type": "object",
+          "$comment": "DUAL-UNIT (R15, v2 L-NULL's restored anti-flattery guard): margin_invoice is the PRIMARY operator-facing figure; a single unlabeled margin is REFUSED at schema validation",
+          "properties": {
+            "null_score": { "type": "number" },
+            "null_usd": { "type": "number" },
+            "margin_invoice": { "type": "number" },
+            "margin_production": { "type": "number" }
+          },
+          "additionalProperties": false
+        },
+        "cells": { "type": "integer" },
+        "rounds_run": { "type": "integer" },
+        "candidates": { "type": "integer" },
+        "failures": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "cell": { "type": "string" },
+              "round": { "type": "integer" },
+              "outcome": { "type": "string" },
+              "reason": { "type": "string" }
+            },
+            "additionalProperties": false
+          },
+          "$comment": "tri-state failures rendered verbatim from this list"
+        },
+        "contested": { "type": "boolean" },
+        "residual": { "type": "array", "items": { "type": "string" } },
+        "cost": {
+          "type": "object",
+          "properties": { "usd_effective": { "type": "number" } },
+          "additionalProperties": true,
+          "$comment": "sec 3.2's example prints {usd_effective}; the canonical cost{} member names (R16) are pricebook.md 5.2's"
+        },
+        "refs": { "type": "array", "items": { "type": "string" } }
+      },
+      "additionalProperties": false
+    },
+    "routine": {
+      "type": "object",
+      "$comment": "command.md sec 6.1 -- routine/5.0.0: a stored CommandEnvelope + triggers; NO second scheduler exists. Slot exactly-once for free: cmd_id = rt:<routine_id>:<slot> + identity-dedup (sec 6.2). Routine specs are content-addressed at fire time (spec_sha256); an edit mid-flight never mutates a running envelope",
+      "properties": {
+        "routine_id": { "type": "string" },
+        "enabled": { "type": "boolean" },
+        "issuer": { "type": "string", "pattern": "^routine/", "$comment": "NEVER operator -- the sec 6.4 unattended ceilings key on this string" },
+        "envelope": {
+          "type": "object",
+          "properties": {
+            "verb": { "enum": ["run", "drive", "ask", "resume", "pause", "stop", "fire", "grant", "deny", "cancel", "routine.set", "provider.set", "config.set", "maintain"] },
+            "params": { "type": "object", "$comment": "${var} substitution resolves ONLY from subst_whitelist; anything else => refused" }
+          },
+          "additionalProperties": true,
+          "$comment": "a stored partial CommandEnvelope; indistinguishable in flow from a typed command (sec 6.3)"
+        },
+        "subst_whitelist": { "type": "array", "items": { "type": "string" } },
+        "triggers": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "kind": { "enum": ["cron", "fire", "watch"] },
+              "spec": { "type": "string", "$comment": "cron: the schedule; slot = the SCHEDULED tick ISO-8601, never observed time" },
+              "catchup": { "enum": ["skip", "once"], "$comment": "default skip; once fires only the single newest missed slot" },
+              "glob": { "type": "string", "$comment": "watch: slot = sha256(path|mtime|size)[:16]" },
+              "settle_s": { "type": "number", "$comment": "watch: pre-filter before coalesce" },
+              "var": { "type": "string" }
+            },
+            "required": ["kind"],
+            "additionalProperties": false
+          }
+        },
+        "unattended": {
+          "type": "object",
+          "properties": { "harm_ceiling": { "enum": ["H0", "H1", "H2", "H3"] } },
+          "additionalProperties": false,
+          "$comment": "H2/H3 acts PARK, never silently auto-approved; the operator key never lives on the cluster, so a routine physically cannot present the H3 signature (sec 6.4, 10-T8)"
+        }
+      },
+      "required": ["routine_id", "envelope"],
+      "additionalProperties": false
+    }
+  }
+}

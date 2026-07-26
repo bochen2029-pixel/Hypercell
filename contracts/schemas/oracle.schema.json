@@ -1,0 +1,399 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "hypercell/contracts/oracle/5.1.0",
+  "title": "oracle -- the trust plane: the oracle stack, the StackReceipt, and the verdict additions",
+  "$comment": "Generated mirror of contracts/oracle.md v5.1.0 (P3 resolution) -- the .md is the source of truth; regenerate on any bump (CONTRACT-HDR-1).",
+  "description": "Root = oneOf the contract's three primary shapes: the oracle STACK (sec 3 -- library://<task_class>/stack.yaml; the manifest carries oracle.ref ONLY, ref-only per R18; frozen at run open), the StackReceipt (sec 5.1 -- the conductor-posted Medium receipt body, non-mintable SEC-3), and the verdict additions (sec 5.2). $defs also carry the canonical null: grammar (sec 12.1 -- THE one home, R17; run.md R1 copies it) and the oracle_gen kind registry (sec 5.5 -- THE one registry; wire.md 3.1 delegates here). Reader liberality: readers MUST ignore unknown fields and apply each addition's stated absent-reading (receipt without oracle.gen reads g0 forever; without failed_phase reads null; without vs_null is excluded from null-ledger folds); unknown oracle_gen kinds are preserved, never dropped.",
+  "oneOf": [
+    { "$ref": "#/$defs/stack" },
+    { "$ref": "#/$defs/stack_receipt" },
+    { "$ref": "#/$defs/verdict_additions" }
+  ],
+  "$defs": {
+    "stack": {
+      "type": "object",
+      "$comment": "oracle.md sec 3 -- 'the oracle' is never one command: a stack of named checks with a pre-registered aggregate, a null policy per check, and per-case FAIL detail. Frozen at run open. Lives at library://<task_class>/stack.yaml; the run manifest carries oracle.ref ONLY (ref-only, R18)",
+      "properties": {
+        "id": { "type": "string", "$comment": "stable name within task_class" },
+        "task_class": { "type": "string", "$comment": "L1 library key (sec 8.3)" },
+        "protocol": { "enum": ["report-file-v5", "score-stdout-v1"], "$comment": "score-stdout-v1 is the deprecated shim (sec 2.5): receipts marked attribution coarse; no HC-7 closure claim; new oracles MUST use report-file-v5" },
+        "gen": { "anyOf": [{ "const": "auto" }, { "type": "integer" }], "$comment": "auto = library head at run open; or pinned int. digest is NEVER authored: the runner resolves gen->digest from the registry; hand-pinned digest mismatch = apparatus INVALID" },
+        "checks": { "type": "array", "items": { "$ref": "#/$defs/check" } },
+        "aggregate": {
+          "type": "object",
+          "properties": {
+            "score": { "type": "string", "$comment": "weighted-mean over scoring checks, post-gate" },
+            "outcome": { "type": "string", "$comment": "gates-lexicographic: ANY fired gate => gate, regardless of score (encodes live topology.py:184 at check level)" },
+            "invalid": { "type": "string", "$comment": "required-after-retries" },
+            "fabrication_score": { "type": "number", "$comment": "0.0 -- below abstain_floor BY CONSTRUCTION (sec 6 step 7)" }
+          },
+          "additionalProperties": false
+        },
+        "convergence": {
+          "type": "object",
+          "$comment": "the trust-side predicate the run engine consumes (sec 5.3, EIGHT clauses; nothing else may declare convergence). KNOB HOMES (R18): the stack owns exactly these FIVE knobs and ONLY those. `stable_k` is a MANIFEST knob (run.md termination{}): counted by the run engine as consecutive VALID grading events with no champion improvement UNDER ONE oracle gen; gen bump resets. [R25] `null_arm` is NOT a stack knob: the null policy lives entirely in the manifest's null: block (grammar sec 12.1; $defs/null_policy)",
+          "properties": {
+            "target": { "type": "number" },
+            "tolerance": { "type": "number" },
+            "divergence_eps": { "type": "number" },
+            "contested_blocks_champion": { "type": "boolean" },
+            "contested_cap": { "type": "integer", "$comment": "regrade attempts before verified-with-residual close (sec 5.3); >= 1 (run.md R1.1 rule 6)" }
+          },
+          "additionalProperties": false
+        },
+        "growth": {
+          "type": "object",
+          "$comment": "A12 pre-registration, frozen at run open",
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "granularity": { "enum": ["round", "epoch"], "$comment": "round (answer runs) | epoch (Crucible P5) -- v2 sec 5 law" },
+            "budget_frac_max": { "type": "number" },
+            "max_cases_per_gen": { "type": "integer" },
+            "p_holdout": { "type": "number" },
+            "admission": { "type": "string", "$comment": "candidate-blind (sec 9 G1) -- constitutionally load-bearing" },
+            "adjudication_quorum": { "type": "integer" }
+          },
+          "additionalProperties": false
+        }
+      },
+      "required": ["id", "checks"],
+      "additionalProperties": false
+    },
+    "check": {
+      "type": "object",
+      "$comment": "oracle.md sec 3 -- one named check; the property union covers the four kinds (unit: exec/grade/cases; grounding: gate/config; panel: tier/roster/blinding/controls/abstain_floor/aggregate/dissent_bound/verbosity_guard; probe: scoring/corpus/budget). A check missing on_null is a schema error (exactly three values)",
+      "properties": {
+        "name": { "type": "string" },
+        "kind": { "enum": ["unit", "grounding", "panel", "probe"] },
+        "required": { "type": "boolean", "$comment": "required: INVALID after retries invalidates the whole StackReceipt (sec 2.4)" },
+        "weight": { "type": "number" },
+        "gate": { "type": "boolean", "$comment": "gates contribute pass|gate, never a score" },
+        "exec": {
+          "type": "object",
+          "$comment": "PHASE A (TP-1): candidate execution in its sandbox over case inputs only; expected values MUST NOT enter the sandbox",
+          "properties": {
+            "driver": { "enum": ["harness.func", "harness.cli", "harness.none"], "$comment": "harness.none: prose/artifact tasks -- the declared artifact IS the behavior; no execution (repeals v1 oracle.mode judge-panel fork)" },
+            "entry": { "type": "string" },
+            "sandbox": { "type": "string", "$comment": "e.g. class-3 (sec 2.1: untrusted/external/adversarial candidate code = class-3, no exceptions); isolation_actual stamped on every receipt" },
+            "limits": {
+              "type": "object",
+              "properties": { "wall_ms": { "type": "number" }, "cpu_ms": { "type": "number" }, "mem_mb": { "type": "number" } },
+              "additionalProperties": false,
+              "$comment": "per case"
+            },
+            "limits_total": {
+              "type": "object",
+              "properties": { "wall_ms": { "type": "number" } },
+              "additionalProperties": false,
+              "$comment": "whole phase A"
+            }
+          },
+          "additionalProperties": false
+        },
+        "grade": {
+          "type": "object",
+          "$comment": "PHASE B (TP-2): grades behavior artifacts oracle-side with no candidate code loaded; the grading channel is the report file the runner names",
+          "properties": {
+            "cmd": { "type": "string" },
+            "timeout_ms": { "type": "integer" },
+            "retries": { "type": "integer", "$comment": "then sec 2.3 differential re-attribution, then INVALID" }
+          },
+          "additionalProperties": false
+        },
+        "cases": { "type": "string", "$comment": "e.g. library://<task_class>/<oracle>@gen" },
+        "config": {
+          "type": "object",
+          "$comment": "kind=grounding: the evidence gate (A11); act-plane primitives fill the receipt evidence{} row; this contract owns gate semantics over it",
+          "properties": {
+            "mode": { "enum": ["none", "sampled", "required"], "$comment": "v2 dial; grounded mode = sampled or required; none: check absent" },
+            "input": { "type": "string", "$comment": "evidence-bundle: membrane-packaged at submission; packager refuses register=narrative (cite-block is cell-side, pre-oracle)" },
+            "digest_check": { "type": "string", "$comment": "all: every evidence ref sha256 re-verified (act-plane primitive)" },
+            "witness_check": { "type": "string", "$comment": "all: every act:// ref must exist in the poster's receipt history" },
+            "entailment_sample": { "type": "number", "$comment": "fraction of (claim, ref) pairs sampled" },
+            "entailment_by": { "type": "string", "$comment": "cross-family-judge; a single entailment miss gates only when digest/witness corroborates, else flagged for panel" },
+            "source_diversity": { "type": "integer", "$comment": ">= n independent domains per load-bearing claim; the CERTIFICATE reports domains-per-material-claim either way" },
+            "trust_floor": { "anyOf": [{ "type": "null" }, { "enum": ["operator", "receipted", "tool", "external"] }], "$comment": "optional minimum ingress trust tag (seat-10 taxonomy) for a terminal to count toward source_diversity; terminals below floor are REPORTED, never silently gating" }
+          },
+          "additionalProperties": true
+        },
+        "tier": {
+          "type": "object",
+          "properties": {
+            "screen": { "type": "integer" },
+            "promotion": { "anyOf": [{ "const": "auto" }, { "type": "integer" }], "$comment": "auto = break-even K* (sec 14)" }
+          },
+          "additionalProperties": false
+        },
+        "roster": {
+          "type": "object",
+          "$comment": "kind=panel (sec 6 JUDGE-PIPELINE): quorum-after-recusal solved at BUILD time; K counts FAMILIES, not judges",
+          "properties": {
+            "families_min": { "type": "integer", "$comment": "distinct weights families (hard floor 2)" },
+            "quorum": { "type": "integer", "$comment": "counted judges surviving recusal, PER producer family" },
+            "judge_depth": { "type": "string", "$comment": "d0" },
+            "source": { "type": "string", "$comment": "pricebook weights_family column -- a TRUST input (sec 15 SEC-2: signed book + runtime canary)" },
+            "k_max": { "type": "integer" }
+          },
+          "additionalProperties": false
+        },
+        "blinding": {
+          "type": "object",
+          "properties": {
+            "strip_metadata": { "type": "boolean" },
+            "order": { "type": "string", "$comment": "per-judge-random" },
+            "pairwise": { "type": "string", "$comment": "both-ways (position-sensitivity discard, sec 6 step 5)" }
+          },
+          "additionalProperties": false
+        },
+        "controls": {
+          "type": "object",
+          "properties": {
+            "golden": { "type": "integer" },
+            "flaw": { "type": "integer" },
+            "source": { "type": "string", "$comment": "library://<task_class>/controls (sec 7 TP-3: labels minted by the next-more-trusted tier only)" }
+          },
+          "additionalProperties": false
+        },
+        "abstain_floor": { "type": "number", "$comment": "sec 6 step 7; fabrication := 0.0 < floor by construction. THE pre-registered constant's ONE home (R20; v2's value 0.3) -- act.md sec 9 cites it, never restates" },
+        "aggregate": { "type": "string", "$comment": "trimmed-median (panel-check aggregate, sec 6 step 8)" },
+        "dissent_bound": { "type": "number", "$comment": "FAMILY-level dissent above this => contested" },
+        "verbosity_guard": {
+          "type": "object",
+          "$comment": "RESTORED from v2 sec 5; MUST measure, SHOULD act, MUST NOT auto-adjust scores",
+          "properties": {
+            "min_gradings": { "type": "integer" },
+            "r_flag": { "type": "number" }
+          },
+          "additionalProperties": false
+        },
+        "corpus": { "type": "string", "$comment": "kind=probe: library://<task_class>/probes -- divergence inputs (unscored)" },
+        "budget": {
+          "type": "object",
+          "properties": { "max_inputs": { "type": "integer" }, "max_pairs": { "type": "integer" } },
+          "additionalProperties": false
+        },
+        "scoring": { "type": "string", "$comment": "kind=probe: none -- NEVER contributes to score/outcome; results NEVER reach producers (zero Goodhart surface, adjudication #382)" },
+        "on_null": { "enum": ["skip", "gate", "invalid"], "$comment": "exactly three; a check missing on_null is a schema error (sec 3 field semantics)" }
+      },
+      "required": ["name", "kind", "on_null"],
+      "additionalProperties": false
+    },
+    "stack_receipt": {
+      "type": "object",
+      "$comment": "oracle.md sec 5.1 -- the conductor-posted Medium `receipt` payload (non-mintable, SEC-3; D-gold; posting to the Medium is LAW -- the E2 fix). Wire.md 3.1: the body IS this StackReceipt verbatim and MAY carry more fields -- additionalProperties true. Reader clauses: absent oracle.gen reads g0 forever; absent failed_phase reads null; absent vs_null predates sec 12 and is excluded from null folds. Per-case detail NEVER rides the Medium receipt -- it lives behind checks[].report_ref (conductor-access-only, sec 4.2 leak constraints)",
+      "properties": {
+        "submission_seq": { "type": "integer" },
+        "oracle": {
+          "type": "object",
+          "properties": {
+            "id": { "type": "string" },
+            "gen": { "type": ["integer", "string"], "$comment": "int in 5.1's block; wire.md 3.1 writes the string form g3; absent reads g0 forever" },
+            "digest": { "type": "string", "$comment": "mismatch against the registry is tamper-evidence (sec 8.2)" }
+          },
+          "additionalProperties": false
+        },
+        "outcome": { "enum": ["passed", "gate", "invalid"], "$comment": "exit tri-state (sec 2.4): gates dominate scores; a required check INVALID after retries invalidates the whole receipt. Spelled passed everywhere incl. wire.md 3.1 (canon #7, Outcome.passed topology.py:184); R3 reader fallback: unknown outcome reads invalid" },
+        "attribution": { "anyOf": [{ "enum": ["candidate", "apparatus"] }, { "type": "null" }], "$comment": "null on passed; structural, never content inspection (sec 2.2); apparatus spend commits to the run but never charges arm.usd_spent" },
+        "failed_phase": { "anyOf": [{ "enum": ["A", "B"] }, { "type": "null" }], "$comment": "A = exec-infrastructure, B = grading apparatus (sec 2.2); null on passed; absent = pre-v5 receipt" },
+        "contested": { "type": "boolean", "$comment": "OR over checks" },
+        "score": { "type": "number" },
+        "checks": { "type": "array", "items": { "$ref": "#/$defs/check_row" } },
+        "graded_by": { "type": "string", "$comment": "conductor" },
+        "cost": { "$ref": "#/$defs/cost", "$comment": "the canonical crossing-record field-group (R2/R16; pricebook.md 5.2 owns member semantics); per-arm attribution source for vs_null matched-invoice folds (R11)" },
+        "wall_ms": { "type": "number", "$comment": "measurement -- a SIBLING of cost{}, not a member (R16: cost{} carries dollar attribution only)" },
+        "evidence_ref": { "type": "string" }
+      },
+      "required": ["submission_seq", "oracle", "outcome"],
+      "additionalProperties": true
+    },
+    "check_row": {
+      "type": "object",
+      "$comment": "oracle.md sec 5.1 -- one per-check row on the StackReceipt; the property union covers the four kinds. The grounding evidence{} row shape is PINNED (#695) so seat 04's certificate reads one shape; report_ref artifacts are conductor-access-only",
+      "properties": {
+        "name": { "type": "string" },
+        "kind": { "enum": ["unit", "grounding", "panel", "probe"] },
+        "outcome": { "enum": ["passed", "gate", "invalid"] },
+        "score": { "type": "number" },
+        "failure_signature": { "type": "string", "$comment": "sha256 over sorted REPORTED failed case-ids (holdout excluded); equality prune is O(1) off the receipt (run.md R2.3)" },
+        "report_ref": { "type": "string", "$comment": "conductor-access-only report artifact (sec 4.2); packets carry REPORTED per-case rows only; probe results never leave the meter" },
+        "gate": { "type": "boolean" },
+        "evidence": {
+          "type": "object",
+          "$comment": "grounding row, PINNED with seat 06 (#695): act-plane primitives fill it, this contract owns gate semantics",
+          "properties": {
+            "resolved": { "type": "integer" },
+            "digest_ok": { "type": "integer" },
+            "witness_ok": { "type": "integer" },
+            "entailment": {
+              "type": "object",
+              "properties": { "sampled": { "type": "integer" }, "passed": { "type": "integer" } },
+              "additionalProperties": false
+            },
+            "coverage": { "type": "number" },
+            "citation_precision_at_k": { "type": "number" },
+            "domains_per_claim": {
+              "type": "object",
+              "properties": { "min": { "type": "number" }, "median": { "type": "number" } },
+              "additionalProperties": false
+            },
+            "trust_floor_met": { "type": "boolean", "$comment": "consumes seat 02/10 terminal trust tags; a low-trust terminal never silently gates (act.md 9.3)" }
+          },
+          "additionalProperties": false
+        },
+        "tier": { "enum": ["screen", "promotion"], "$comment": "tier: screen receipts MUST NOT seat a champion, post a verdict, or trigger ejection (sec 14)" },
+        "scores": { "type": "array", "items": { "type": "number" }, "$comment": "raw, counted judges, post-blind order" },
+        "families": { "type": "array", "items": { "type": "string" } },
+        "recused": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": { "lane": { "type": "string" }, "raw": { "type": "number" } },
+            "additionalProperties": true
+          },
+          "$comment": "runner-marked same-family scores: logged advisory, excluded from counted (sec 6 step 4)"
+        },
+        "abstained": { "type": "array" },
+        "probation": { "type": "array" },
+        "controls": {
+          "type": "object",
+          "properties": {
+            "golden": { "type": "number" },
+            "flaw": { "type": "number" },
+            "per_judge_pass": { "type": "array", "items": { "type": "boolean" } }
+          },
+          "additionalProperties": false
+        },
+        "dissent": { "type": "number", "$comment": "FAMILY-level (sec 6 step 8): max over family pairs of |fam_score gap| / 10; one family among counted => contested BY FIAT" },
+        "verbosity_r": { "type": ["number", "null"], "$comment": "spearman(counted score, candidate tokens); null until min_gradings (sec 6 step 9)" },
+        "contested": { "type": "boolean" },
+        "degraded": { "type": "boolean", "$comment": "degraded panel = contested-equivalent; may rank, never seat a verified champion (sec 6 step 1)" },
+        "scoring": { "type": "string", "$comment": "probe row: none" },
+        "divergence_contrib_ref": { "type": "string" }
+      },
+      "required": ["name", "kind"],
+      "additionalProperties": true
+    },
+    "verdict_additions": {
+      "type": "object",
+      "$comment": "oracle.md sec 5.2 -- trust-plane (certificate-side) additions the run engine assembles onto the wire verdict body (wire.md 3.1 owns the wire discriminator `kind` and base fields champion/why/refs); additionalProperties true because it rides that body",
+      "properties": {
+        "kind": { "enum": ["verified", "verified-with-residual", "synthesis"], "$comment": "R21: the discriminator is `kind` -- wire.md 3.1's HOME enum, same spelling (5.0.0's certificate-side `type` renamed)" },
+        "oracle_gen": {
+          "type": "object",
+          "properties": {
+            "id": { "type": "string" },
+            "gen": { "type": ["integer", "string"] },
+            "digest": { "type": "string" }
+          },
+          "additionalProperties": false
+        },
+        "champion": {
+          "type": "object",
+          "properties": {
+            "arm": { "type": "string", "$comment": "may BE null-arm (the run still delivers)" },
+            "score": { "type": "number" },
+            "receipt_seq": { "type": "integer" }
+          },
+          "additionalProperties": true
+        },
+        "vs_null": {
+          "type": "object",
+          "$comment": "sec 12.3 dual-unit accounting; canonical members (R15/canon #6) = {null_score, null_usd, margin_production, margin_invoice} -- no lift_* names; null_usd is ONE member (a production/invoice split of the null's spend is render-side detail, never the wire join key). margin_invoice is the operator's unit; the flip predicate keys here (sec 12.4)",
+          "properties": {
+            "null_score": { "type": "number" },
+            "null_usd": { "type": "number" },
+            "margin_production": { "type": "number" },
+            "margin_invoice": { "type": "number" },
+            "null_mode": { "enum": ["inline", "sampled", "audited-estimate"] },
+            "null_pin": {
+              "type": "object",
+              "properties": {
+                "family": { "type": "string" },
+                "provenance": { "enum": ["operator-pin", "ranking-artifact"], "$comment": "CLOSED enum (sec 12.1, R17)" },
+                "ref": { "type": "string", "$comment": "sec 12.1 ref grammar: artifact://rankings/...#sha256=... (sec 5.2's example also admits medium://...)" },
+                "as_of": { "type": "string" }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        },
+        "residual": {
+          "type": "object",
+          "$comment": "honest degradation home (sec 1.4): every mechanism that cannot run degrades to a named, certificate-visible weaker state",
+          "properties": {
+            "divergence": { "type": "number" },
+            "contested_cases": { "type": "array" },
+            "unprobed": { "type": "array", "items": { "type": "string" } },
+            "panel_dissent_by_family": { "type": "object", "additionalProperties": { "type": "number" } },
+            "grounding": {
+              "type": "object",
+              "properties": {
+                "domains_per_material_claim_min": { "type": "integer" },
+                "trust_floor_met": { "type": "boolean" }
+              },
+              "additionalProperties": true
+            },
+            "degraded": { "type": "array", "$comment": "named degradations (sec 1.4) -- e.g. 'differential re-attribution unavailable (single-arm topology)' (sec 2.3 rule 4, s6-14)" }
+          },
+          "additionalProperties": true
+        },
+        "regrades": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "gen": { "type": ["integer", "string"] },
+              "survivors": { "type": "integer" },
+              "usd": { "type": "number" }
+            },
+            "additionalProperties": false
+          },
+          "$comment": "sec 9.4: regrades are phase-B-only over cached behavior artifacts -- near-free by construction"
+        },
+        "invalid_rate": { "type": "number", "$comment": "folded by the run engine; sec 2.4 R% halt input" }
+      },
+      "required": ["kind"],
+      "additionalProperties": true
+    },
+    "cost": {
+      "type": "object",
+      "$comment": "the canonical crossing-record cost{} field-group -- exactly six members (R16; pricebook.md 5.2 owns semantics). wall_ms is NOT a member: it is a sibling measurement field on the receipt",
+      "properties": {
+        "usd_effective": { "type": "number" },
+        "usd_reserved": { "type": "number" },
+        "sku": { "type": "string" },
+        "purpose": { "enum": ["production", "verification", "oracle_growth", "tool", "maintenance"], "$comment": "the canonical purpose enum (pricebook.md 5.2). NOTE: oracle.md sec 5.1's example prints purpose: grading, which is not in the enum -- a contract-side discrepancy flagged in the P3 fix report; judge spend rides verification per sec 2.2" },
+        "resv_id": { "type": "string" },
+        "pricebook_version": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "oracle_gen_kind": {
+      "enum": ["gen_open", "sealed_report", "spec_bug", "judge_ejected", "crucible_halt", "diversity_alarm", "errata", "operator_audit"],
+      "$comment": "oracle.md sec 5.5 -- THE one oracle_gen kind registry (wire.md 3.1 delegates here; canon #13). All kinds conductor-minted (SEC-3), D-gold, R-forever; unknown kinds preserved, never dropped; kind-addition is MINOR"
+    },
+    "null_policy": {
+      "type": "object",
+      "$comment": "oracle.md sec 12.1 -- THE canonical null: grammar (R17, the ONE home; run.md R1 regenerates its null: block by COPY from here; ARCH W1 cites it). Mode is DERIVED from the class lifecycle (auto), never authored per-run; matched = v2 shape (ONE null cell, protected arm outside UCB, matched-dollar reservation at run open); floor is refused for unsettled classes. [R25] null_arm policy lives here (manifest side), never in the stack's convergence block",
+      "properties": {
+        "mode": { "enum": ["auto", "matched", "floor"] },
+        "pin": {
+          "type": "object",
+          "$comment": "the null's family is PRE-REGISTERED, never chosen by the machinery under audit",
+          "properties": {
+            "family": { "type": "string" },
+            "provenance": { "enum": ["operator-pin", "ranking-artifact"], "$comment": "CLOSED enum" },
+            "ref": { "type": "string", "$comment": "grammar: artifact://rankings/...#sha256=... (dated external ranking, facts-with-dates style)" },
+            "as_of": { "type": "string" }
+          },
+          "additionalProperties": false
+        },
+        "m": { "type": "integer", "$comment": "settledness + flip-evidence threshold (sec 12.4); default 5" },
+        "floor_frac": { "type": "number", "$comment": "floor mode: protected reservation fraction; default 0.10" },
+        "audit_rate": { "type": "number", "$comment": "floor mode: fraction of runs replaying the matched null; default 0.25" }
+      },
+      "additionalProperties": false
+    }
+  }
+}

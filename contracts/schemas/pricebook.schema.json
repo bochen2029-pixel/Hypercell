@@ -1,0 +1,243 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "hypercell/contracts/pricebook/5.1.0",
+  "title": "pricebook -- the economics plane's data artifact (pricebook.yaml) and the cost{} field-group",
+  "$comment": "Generated mirror of contracts/pricebook.md v5.1.0 (P3 resolution) -- the .md is the source of truth; regenerate on any bump (CONTRACT-HDR-1).",
+  "description": "Root = the pricebook.yaml artifact (pricebook.md sec 1: header/defaults + skus map; the book prices SKUs <weights>@<host>/<service_tier>, not lanes). Reader liberality (sec 6, G4): readers MUST ignore unknown SKU fields (new pricing dimensions arrive quarterly) and MUST NOT invent absent capabilities (absent cache_read_mult = no cache; absent batch_kind = none; absent warmer_release = on_complete; absent stacks_with_cache = better-of-two). A row failing its REQUIRED fields does not parse -- the loader refuses the whole file with the row named. One law: a row without a date does not parse; an unpriced lane does not run; an unreservable call does not dispatch. $defs carry the canonical cost{} field-group (sec 5.2, R16) and the conductor-ledger SPEND record (sec 5.1 -- NOT a Medium type).",
+  "type": "object",
+  "properties": {
+    "pricebook": {
+      "type": "object",
+      "$comment": "sec 1.1 header + defaults",
+      "properties": {
+        "version": { "type": ["string", "null"], "$comment": "COMPUTED: sha256 of canonical content; every spend record cites it -- costs recomputable forever against the book they were priced under" },
+        "signature": { "type": ["string", "null"], "$comment": "REQUIRED at Stage-1b+: operator signature over version (custody/verification: identity-firewall.md B-Annex-2; a book failing verification at Stage-1b+ is REFUSED entirely; below Stage-1b the loader warns and proceeds -- sec 6)" },
+        "currency": { "type": "string", "$comment": "USD_per_1M_tokens" },
+        "defaults": {
+          "type": "object",
+          "properties": {
+            "max_age_days": { "type": "number", "$comment": "per-SKU override allowed" },
+            "stale_mult": { "type": "number", "$comment": "estimation-only pessimism multiplier; applied UPWARD only (rule 3)" },
+            "refuse_after": { "type": "number", "$comment": "lane REFUSED at age > refuse_after x max_age_days (rule 4; flag-overridable)" }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "skus": {
+      "type": "object",
+      "$comment": "sec 1.2 -- key = <weights>@<host>/<service_tier> for token rows (unknown service_tier strings are legal, sec 6); tool.<capability>@<provider>/<tier> for non-token lanes",
+      "patternProperties": {
+        "^tool\\.": { "$ref": "#/$defs/tool_sku" }
+      },
+      "additionalProperties": { "$ref": "#/$defs/token_sku" }
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "verified_flag": {
+      "anyOf": [
+        { "type": "boolean" },
+        { "enum": ["mixed", "bench"] }
+      ],
+      "$comment": "true|false|mixed|bench (sec 1.2); verified:false rows are quotable but every quote/receipt carries the flag (rule 9)"
+    },
+    "token_sku": {
+      "type": "object",
+      "$comment": "sec 1.2 token SKU row. A lane = {sku, effort, cache_mode, batch}: lane dimensions modify token counts/multipliers over one SKU's unit prices, never the unit prices. additionalProperties true per sec 6 reader liberality (unknown SKU fields ignored). in/out REQUIRED for token rows (sec 6) EXCEPT requires_contract rows, which are custom-priced via an operator-written contract_price block (rules 9; seed row kimi-k2.6@cerebras/dedicated) -- hence not schema-required here",
+      "properties": {
+        "weights_family": { "type": "string", "$comment": "REQUIRED. The diversity axis (A6); consumed by the oracle seat's quorum solver + the router's diversity floor. For third-party hosts a CLAIM, trustworthy only under lane-family attestation = signed book (declaration) + runtime canary (reality; oracle.md SEC-2, s6-13). TWO FLAGS, TWO OWNERS: the trust DIVERSITY flag is family_verified (trust-plane-owned, never a field of this book) -- diversity-counting gates on family_verified, NEVER parity_verified" },
+        "parity_verified": { "type": "boolean", "$comment": "the ECON COST-parity flag (pricebook-owned; s6-13 split). Third-party serving of open weights => parity probe required (5 paired pulls vs first-party, |dScore| <= 0.05). Cost/routing parity ONLY -- diversity-counting MUST NOT key on this flag. A family_verified canary mismatch also flips this false + row stale; the diversity-contribution-ZERO law is family_verified's (oracle.md SEC-2), never this flag's" },
+        "in": { "type": "number", "$comment": "REQUIRED (token rows). Cache-MISS sticker input price, usd/1M" },
+        "out": { "type": "number", "$comment": "REQUIRED (token rows). usd/1M" },
+        "out_batched": { "type": "number", "$comment": "appears on local rows in the sec 2 seed (batched-throughput electricity price)" },
+        "cache_read_mult": { "type": "number", "$comment": "multiplier on in for cache-hit tokens; ABSENT => no cache capability (read=1.0). Per-SKU FACT, never per-weights" },
+        "cache_write_mult": { "type": "number" },
+        "cache_write_mult_1h": { "type": "number", "$comment": "long-TTL write variant" },
+        "cache_storage_usd_per_1M_hr": { "type": "number", "$comment": "NEW v5: explicit-cache storage RENT; quote() adds rent x expected_hold_hours" },
+        "cache_ttl_s": { "type": "integer", "$comment": "provider prefix retention; UNDOCUMENTED => pessimistic 300" },
+        "cache_ttl_refresh_on_hit": { "type": "boolean", "$comment": "default false" },
+        "cache_min_prompt_tokens": { "type": "integer", "$comment": "NEW v5: minimum cacheable prompt; below it, cache terms drop out" },
+        "cache_granularity_tokens": { "type": "integer", "$comment": "prefix-match granularity; informational" },
+        "cache_scope": { "enum": ["org", "key", "request"], "$comment": "NEW v5; default key" },
+        "max_cache_breakpoints": { "type": "integer", "$comment": "appears on anthropic rows in the sec 2 seed" },
+        "warmer_release": { "enum": ["on_ttft", "on_complete", "none"], "$comment": "when N-1 staggered callers may read the warmer's prefix; default on_complete; an optimistic on_ttft elsewhere silently pays N writes" },
+        "batch_kind": { "enum": ["endpoint", "window", "none"], "$comment": "endpoint = real async batch API; window = off-peak clock discount (enum kept for schema stability); none = batch dims inadmissible" },
+        "batch_mult": { "type": "number" },
+        "batch_window_max_h": { "type": "integer", "$comment": "NEW v5: the booked OUTER completion bound; sla admissibility keys on THIS; ABSENT with batch_kind:endpoint => 24" },
+        "stacks_with_cache": { "type": ["boolean", "null"], "$comment": "whether batch_mult x cache_read_mult compose; null => PESSIMISTIC better-of-two at quote" },
+        "effort_map": {
+          "type": "object",
+          "properties": { "low": {}, "medium": {}, "high": {} },
+          "additionalProperties": true,
+          "$comment": "OPTIONAL provider effort/reasoning dial -> param map; effort changes COUNTS, never unit price"
+        },
+        "context_max": { "type": "integer" },
+        "max_output_max": { "type": "integer" },
+        "context_tiers": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "over_tokens": { "type": "integer" },
+              "in": { "type": "number" },
+              "out": { "type": "number" }
+            },
+            "additionalProperties": false
+          },
+          "$comment": "long-context surcharges; straddle rule: the higher tier prices the WHOLE call when the estimate straddles the boundary"
+        },
+        "effective_until": { "type": "string", "$comment": "scheduled price/existence cliff; a provider-announced deprecation date is an effective_until -- past it without successor the lane is REFUSED (rule 6)" },
+        "successor": {
+          "type": "object",
+          "properties": {
+            "in": { "type": "number" },
+            "out": { "type": "number" },
+            "cache_read": { "type": "number" }
+          },
+          "additionalProperties": true,
+          "$comment": "applied automatically at the effective_until date (no silent under-reservation)"
+        },
+        "requires_contract": { "type": "boolean", "$comment": "NEW v5: live lane, custom-priced; quote() REFUSES unless the operator has written a contract_price block. Never estimated" },
+        "contract_price": { "type": "object", "$comment": "operator-written prices for requires_contract rows (rule 9; shape prose-only in the .md)" },
+        "geo_mult": { "type": "object", "additionalProperties": { "type": "number" }, "$comment": "inference-geo multiplier, e.g. {us_only: 1.1}" },
+        "tokenizer": {
+          "type": "object",
+          "properties": {
+            "family": { "type": "string" },
+            "chars_per_token_hint": { "type": "number" }
+          },
+          "additionalProperties": false,
+          "$comment": "NEW v5: cross-SKU token-estimate conversion; the frame manifest's est_tokens is PER-FAMILY; ABSENT => one universal estimate with declared error"
+        },
+        "concurrency_cap": { "type": "integer", "$comment": "fleet-side politeness cap (lived F2)" },
+        "tok_s_p50": { "type": "number", "$comment": "LEDGER-DERIVED (rolling p50, last 200 calls); hand-seeded only until 20 calls accrue (rule 7); never hand-edited after" },
+        "ttft_p50_ms": { "type": "number", "$comment": "ledger-derived, as tok_s_p50" },
+        "liveness": { "$comment": "LOCAL rows only; SET BY PREFLIGHT (substrate seam), never by hand" },
+        "electricity": {
+          "type": "object",
+          "properties": {
+            "watts": { "type": "number" },
+            "usd_per_kwh": { "type": "number" },
+            "measured_at": { "type": ["string", "null"] }
+          },
+          "additionalProperties": false,
+          "$comment": "local rows"
+        },
+        "capex_amort": {
+          "anyOf": [
+            { "type": "null" },
+            {
+              "type": "object",
+              "properties": { "gpu_usd": { "type": "number" }, "dep_hours": { "type": "number" } },
+              "additionalProperties": false
+            }
+          ],
+          "$comment": "OPTIONAL; default OFF -- sovereignty accounting counts marginal cost"
+        },
+        "as_of": { "type": ["string", "null"], "$comment": "REQUIRED (present); age = today - as_of drives rules 2-4. Local rows carry null until the bench job sets it (rule 8)" },
+        "source": { "type": "string", "$comment": "REQUIRED. Primary docs > vendor page > aggregator > bench" },
+        "verified": { "$ref": "#/$defs/verified_flag" },
+        "promo_until": { "type": ["string", "null"], "$comment": "a promo price MUST NOT be booked without its expiry; book the LIST price and note the promo" }
+      },
+      "required": ["weights_family", "as_of", "source", "verified"],
+      "additionalProperties": true
+    },
+    "tool_sku": {
+      "type": "object",
+      "$comment": "sec 1.2 non-token (tool) lane: acts reserve here under purpose=tool. Unknown pricing_model strings are NOT legal (the escrow cannot compute worst-case for a model it does not know => row unreservable, sec 6)",
+      "properties": {
+        "pricing_model": { "enum": ["flat_per_call", "per_second", "per_unit"] },
+        "per_call": { "type": "number" },
+        "per_second": { "type": "number" },
+        "per_unit": {
+          "type": "object",
+          "properties": { "unit": { "type": "string" }, "usd": { "type": "number" } },
+          "additionalProperties": false
+        },
+        "worst_case": { "type": "string", "$comment": "expression, e.g. timeout_s x per_second; a tool act with no computable worst-case is UNRESERVABLE => REFUSED (act seam)" },
+        "leaseable": { "type": "boolean", "$comment": "NEW v5: eligible for sec 4.5 res:lease micro-escrow (high-rate H0 lanes)" },
+        "as_of": { "type": ["string", "null"] },
+        "source": { "type": "string" },
+        "verified": { "$ref": "#/$defs/verified_flag" }
+      },
+      "required": ["pricing_model", "as_of", "source", "verified"],
+      "additionalProperties": true
+    },
+    "cost": {
+      "type": "object",
+      "$comment": "sec 5.2 -- the canonical cost{} field-group riding Medium records that already cross (receipt / act_receipt / cmd_receipt / verdict / StackReceipt): fleet-visible spend attribution WITHOUT a new payload type (v2 sec 7 kept; v3's Medium type:spend repealed -- rulings #687/#694). Exactly six members (R16); wall_ms is NOT a member (it is a sibling measurement field on the carrying record, oracle.md 5.1). Escrow truth-home = the conductor's own ledger; these groups are the cross-check join",
+      "properties": {
+        "usd_effective": { "type": "number" },
+        "usd_reserved": { "type": "number" },
+        "sku": { "type": "string", "$comment": "redacted to a hashed lane id in operator-external exports (identity-firewall B-Annex-2)" },
+        "purpose": { "enum": ["production", "verification", "oracle_growth", "tool", "maintenance"], "$comment": "the canonical purpose enum (sec 5.1; same set as the SPEND record and budget.purposes scopes)" },
+        "resv_id": { "type": "string" },
+        "pricebook_version": { "type": "string", "$comment": "recomputable forever" }
+      },
+      "additionalProperties": false
+    },
+    "spend_record": {
+      "type": "object",
+      "$comment": "sec 5.1 -- SPEND record on the conductor's own fsync'd ledger; NOT a Medium type (spend-home ruling). Scope counters are in-memory folds over RESERVE/COMMIT/RELEASE/SPEND records, rebuilt on restart",
+      "properties": {
+        "rec": { "const": "spend" },
+        "corr": { "type": "string" },
+        "run_id": { "type": "string" },
+        "arm_id": { "type": "string" },
+        "step_id": { "type": "string" },
+        "issuer": { "type": "string", "$comment": "claim-id, or conductor for plane-side calls" },
+        "purpose": { "enum": ["production", "verification", "oracle_growth", "tool", "maintenance"] },
+        "attribution": {
+          "anyOf": [{ "enum": ["candidate", "apparatus"] }, { "type": "null" }],
+          "$comment": "NEW v5 (#683b): apparatus => NOT charged to arm.usd_spent for the dollar-UCB index; folds run-level apparatus_usd"
+        },
+        "sku": { "type": "string" },
+        "lane": {
+          "type": "object",
+          "properties": {
+            "effort": { "type": "string" },
+            "cache_mode": { "type": "string" },
+            "batch": { "type": "boolean" }
+          },
+          "additionalProperties": false
+        },
+        "tokens": {
+          "type": "object",
+          "properties": {
+            "in": { "type": "integer" },
+            "out": { "type": "integer" },
+            "cache_read": { "type": "integer" },
+            "cache_write": { "type": "integer" }
+          },
+          "additionalProperties": false
+        },
+        "usd_sticker": { "type": "number", "$comment": "all tokens at cache-miss -- the counterfactual" },
+        "usd_effective": { "type": "number", "$comment": "at booked multipliers -- what we believe we owe" },
+        "usd_reserved": { "type": "number", "$comment": "the escrow worst-case this call held" },
+        "api_reported_usd": { "type": ["number", "null"], "$comment": "provider-reported actual where the API returns one" },
+        "pricebook_version": { "type": "string" },
+        "latency_ms": {
+          "type": "object",
+          "properties": {
+            "queue": { "type": "number" },
+            "ttft": { "type": "number" },
+            "total": { "type": "number" }
+          },
+          "additionalProperties": false
+        },
+        "retries": { "type": "integer", "$comment": "each retry attempt is a NEW reservation (sec 4.1)" },
+        "outcome": { "enum": ["ok", "error", "429", "timeout", "cancelled", "unknown"], "$comment": "in-doubt spend commits at worst case under outcome=unknown (reconcile, sec 4.2)" },
+        "resv_id": { "type": "string" },
+        "batch_id": { "type": ["string", "null"], "$comment": "res:durable legs carry the provider batch_id" },
+        "race_group": { "type": ["string", "null"] },
+        "waste_flag": {
+          "anyOf": [{ "enum": ["racing_loser", "batch_expired", "apparatus_invalid"] }, { "type": "null" }]
+        }
+      },
+      "required": ["rec"],
+      "additionalProperties": false
+    }
+  }
+}

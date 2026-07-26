@@ -1,0 +1,273 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "hypercell/contracts/act/5.1.0",
+  "title": "act -- the act plane: act payload, act_receipt payload, and the tool-profile annex",
+  "$comment": "Generated mirror of contracts/act.md v5.1.0 (P3 resolution) -- the .md is the source of truth; regenerate on any bump (CONTRACT-HDR-1).",
+  "description": "Root = oneOf the contract's three primary shapes: the `act` payload (sec 2, cell -> Membrane -> executor; envelope corr MUST equal act_id), the `act_receipt` payload (sec 3, executor/Conductor-minted, NEVER the acting cell -- no act reports itself, A5; three phases = three separate envelopes sharing corr), and the Annex A tool profile (sec 10.2). Reader liberality (G4, kernel R2/R5): emitters emit exactly this shape (hence additionalProperties false on the two payloads); readers MUST ignore unknown fields and preserve them on re-emit; a reader that cannot parse a REQUIRED field treats the record as invalid, never absent. $defs also carry the expectation (sec 4) and the evidence[] entry (sec 5.1).",
+  "oneOf": [
+    { "$ref": "#/$defs/act" },
+    { "$ref": "#/$defs/act_receipt" },
+    { "$ref": "#/$defs/tool_profile" }
+  ],
+  "$defs": {
+    "act": {
+      "type": "object",
+      "$comment": "act.md sec 2 -- Medium type `act`. Field laws: args MUST validate against the profile's args_schema (gate step b); args MUST NOT contain credentials (step f; adapter credentials are fabric-held, executor-injected); cost_est.usd_worst MUST be computable from the pricebook lane else the act is unreservable, hence refused. H1+ additionally REQUIRE idem, effect_scope, and a losable expectation (gate step g)",
+      "properties": {
+        "act_id": { "type": "string", "$comment": "ULID, actor-minted; the corr for every phase receipt and grant" },
+        "claim": { "type": "string", "$comment": "actor claim-id: binds act -> durable identity -> lineage" },
+        "capability_ref": { "type": "string", "$comment": "MUST resolve in Annex A (sec 10) AND be in role.tools" },
+        "tool_version": { "type": "integer", "$comment": "profile MAJOR pinned at gate time; receipts echo it" },
+        "harm_declared": { "enum": ["H0", "H1", "H2", "H3"], "$comment": "the cell's claim; harm_effective = max(declared, derived) at gate; declared < derived => REFUSE, never silent promotion (sec 6.1 step d)" },
+        "idem": { "type": "string", "$comment": "REQUIRED H1+; attempt-level key for nucleus resume dedup (outcome_for(idem)); defaults to act_id" },
+        "attempt": { "type": "integer", "$comment": "increments ONLY after exec outcome=invalid (apparatus failure)" },
+        "effect_scope": { "enum": ["instance", "lineage", "slot"], "$comment": "REQUIRED H1+; H0 fixed at instance. lineage = set-once across the fork tree (sec 7.1); slot = one fire per scheduled slot" },
+        "effect_id": { "type": "string", "$comment": "sha256(capability_ref | tool_version | JCS(sig_args)); JCS = RFC 8785 over effect-significant args ONLY (sec 7.1)" },
+        "expectation": { "$ref": "#/$defs/expectation", "$comment": "REQUIRED H1+ and MUST pass the losability battery (sec 4.1); MAY at H0 but SHOULD NOT" },
+        "args": { "type": "object", "$comment": "validated against the profile's args_schema at gate step b" },
+        "args_ref": { "type": ["object", "null"], "$comment": "artifact pointer when args > 4KB (wire body cap)" },
+        "cost_est": {
+          "type": "object",
+          "properties": {
+            "usd_worst": { "type": "number" },
+            "basis": { "type": "string", "$comment": "e.g. pricebook:tool.web.fetch@<as_of>" }
+          },
+          "additionalProperties": false,
+          "$comment": "no computable worst-case => unreservable => refused (econ T1 extended to tools)"
+        }
+      },
+      "required": ["act_id", "claim", "capability_ref"],
+      "additionalProperties": false
+    },
+    "act_receipt": {
+      "type": "object",
+      "$comment": "act.md sec 3 -- Medium type `act_receipt`; mintable by executor principals (runner-N, conductor resolver/settlement daemons), NEVER the acting cell's cognition principal (A5; ACL row, identity-firewall B.9). Duty split (V-RECEIPT): act_receipt = the WORLD side (hold/exec/settle); receipt{subject:act} = the ORACLE side. Retention: H1+ R-forever + D-gold unconditionally; H0 R-run + D-chatter, retention-promoted only via the delivered verdict's evidence closure (sec 3.2)",
+      "properties": {
+        "act_id": { "type": "string" },
+        "phase": { "enum": ["hold", "exec", "settle"], "$comment": "phase law: settle REQUIRES a prior exec ok on the same corr; grant expiry on a held act is exec/refused/grant_lapsed (sec 3.1)" },
+        "outcome": {
+          "anyOf": [
+            { "enum": ["ok", "refused", "invalid", "unknown", "miss", "expired"] },
+            { "type": "null" }
+          ],
+          "$comment": "phase-partitioned (sec 3.1): exec = ok|refused|invalid|unknown; settle = ok|miss|expired; hold carries no outcome (null). unknown is NEVER blind-retried -> reconciliation (sec 8). R3 wire fallback: unknown act outcome reads unknown (reconcile)"
+        },
+        "reason": {
+          "anyOf": [
+            { "enum": ["harm_derived", "harm_ceiling", "egress", "budget", "duplicate_effect", "not_losable", "trifecta", "canceled", "grant_lapsed", "dead_man"] },
+            { "type": "null" }
+          ],
+          "$comment": "refused only; closed enum, MINOR to extend"
+        },
+        "harm_effective": { "enum": ["H0", "H1", "H2", "H3"] },
+        "tool_version": { "type": "integer" },
+        "evidence": {
+          "type": "object",
+          "$comment": "exec phase; sec 5 for how refs point AT this",
+          "properties": {
+            "output_hash": { "type": "string", "$comment": "over RAW output bytes, pre-transform (re-checkable)" },
+            "artifact": {
+              "type": "object",
+              "properties": {
+                "path": { "type": "string", "$comment": "content-addressed store" },
+                "bytes": { "type": "integer" },
+                "mime": { "type": "string" },
+                "sha256": { "type": "string" }
+              },
+              "additionalProperties": false
+            },
+            "provenance": {
+              "type": "object",
+              "properties": {
+                "url": { "type": "string" },
+                "method": { "type": "string" },
+                "status": { "type": "integer" },
+                "etag": { "type": "string" },
+                "content_type": { "type": "string" },
+                "scrubbed": { "type": "boolean", "$comment": "TRUE iff credential components were removed (sec 10.2); scrubbed provenance is the ONLY provenance that may cross into evidence bundles, reports, or certificates (seat 05)" }
+              },
+              "additionalProperties": false
+            },
+            "retrieved_at": { "type": "string" },
+            "truncated": { "type": "boolean", "$comment": "max_bytes hit => true => evidence graded partial (sec 5.4)" }
+          },
+          "additionalProperties": false
+        },
+        "isolation": {
+          "type": "object",
+          "properties": {
+            "required": { "type": "string" },
+            "actual": { "type": "string" },
+            "degraded": { "type": "boolean" }
+          },
+          "additionalProperties": false
+        },
+        "cost": { "$ref": "#/$defs/cost" },
+        "wall_ms": { "type": "number", "$comment": "SIBLING measurement field, never a cost{} member (R16); act.md sec 3 moved it out of cost{} in 5.1.0" },
+        "tokens": {
+          "type": "object",
+          "properties": { "in": { "type": "integer" }, "out": { "type": "integer" } },
+          "additionalProperties": false,
+          "$comment": "where present, rides the same way as wall_ms -- a SIBLING measurement field, never a cost{} member (R16)"
+        },
+        "graded_by": { "type": "string", "$comment": "exec: executor id; settle: resolver:<check.kind>; hold: conductor; reconcile-minted: resolver:reconcile" },
+        "attempt": { "type": "integer" },
+        "summary": {
+          "anyOf": [
+            { "type": "null" },
+            {
+              "type": "object",
+              "$comment": "phase=hold ONLY (join-free queue rendering, seat 08 Q-QUEUE): countdowns and the copy-paste grant text render from hold rows alone",
+              "properties": {
+                "claim": { "type": "string" },
+                "capability_ref": { "type": "string" },
+                "harm_effective": { "enum": ["H0", "H1", "H2", "H3"] },
+                "expectation": {
+                  "anyOf": [
+                    { "type": "null" },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "kind": { "type": "string" },
+                        "resolve_by": { "type": "string" }
+                      },
+                      "additionalProperties": false
+                    }
+                  ]
+                },
+                "until": { "type": ["string", "null"] },
+                "grant_ttl_s": { "type": "number" }
+              },
+              "additionalProperties": false
+            }
+          ]
+        },
+        "hold": {
+          "anyOf": [
+            { "type": "null" },
+            {
+              "type": "object",
+              "$comment": "phase=hold ONLY; the hold record IS the H2 countdown and the cancelable message (sec 6.4); dead-man: no interactive proof-of-notification by until - grace => escalated H3",
+              "properties": {
+                "until": { "type": ["string", "null"], "$comment": "null = H3 park-until-command (sec 6.5)" },
+                "notified_seq": { "type": ["integer", "null"], "$comment": "proof-of-notification = an INTERACTIVE-class cursor advancing past the hold seq" },
+                "escalated": { "anyOf": [{ "const": "H3" }, { "type": "null" }] },
+                "grant_ref": { "type": ["string", "null"], "$comment": "the consuming grant's cmd_id (single-use, sec 6.5)" }
+              },
+              "additionalProperties": false
+            }
+          ]
+        },
+        "duplicate_of": { "type": ["string", "null"], "$comment": "refused/duplicate_effect: the WINNER's act_id -- the losing sibling awaits that corr and SHARES its evidence (sec 7.3, dedup-and-share)" }
+      },
+      "required": ["act_id", "phase"],
+      "additionalProperties": false
+    },
+    "expectation": {
+      "type": "object",
+      "$comment": "act.md sec 4 -- the losable wager; all four losability clauses MUST hold (sec 4.1): kind in registry, non-tautology (expected-set must not cover the codomain), independence (no kind reads the actor's own assertion text), window",
+      "properties": {
+        "check": {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "enum": ["http_status", "content_digest", "dns_resolves", "file_exists", "medium_query", "oracle_cmd", "manual"],
+              "$comment": "the initial resolver registry (sec 4.2); each kind returns HOLDS|FAILS|UNDECIDABLE and declares late_check valid|expired (default expired -- honesty over generosity); manual is legal only where an operator is already in the loop (H2/H3)"
+            },
+            "args": { "type": "object" }
+          },
+          "required": ["kind"],
+          "additionalProperties": false
+        },
+        "resolve_by": { "type": "string", "$comment": "> journal-ts + effect latency; <= role.max_wager_horizon (default 7d)" },
+        "on_miss": {
+          "anyOf": [
+            { "const": "flag" },
+            { "type": "string", "pattern": "^compensate:" }
+          ],
+          "$comment": "flag | compensate:<profile-template ref>; compensation = a NEW act, full pipeline, its own wager; never an implicit rollback"
+        },
+        "resolver": { "enum": ["conductor", "operator"], "$comment": "operator = manual; H2/H3 only" }
+      },
+      "additionalProperties": false
+    },
+    "evidence_entry": {
+      "type": "object",
+      "$comment": "act.md sec 5.1 -- the evidence[] entry on submission and verdict (wire.md 3.1 owns the record shape and names the minimal binding). Resolution: sec 5.2 (hop limit 3, no cycles, every hop's digest MUST verify); an https ref with no witnessing act in the poster's own receipt set is a naked claim",
+      "properties": {
+        "kind": { "enum": ["act", "medium", "nucleus", "url", "file"], "$comment": "= scheme, kept explicit so folds filter without parsing URIs; R30: url is canonical, never web (act.md aligned to wire.md 3.1 in 5.1.0)" },
+        "ref": { "type": "string", "$comment": "e.g. act://<corr>; must resolve to phase:exec outcome:ok to serve as supports" },
+        "sha256": { "type": "string", "$comment": "content digest at witness time" },
+        "retrieved_at": { "type": "string", "$comment": "older than grounding.max_age => demotes to context unless re-witnessed (sec 5.4)" },
+        "quote": { "type": "string", "$comment": "the entailing span; <= grounding.quote_max (default 500 chars)" },
+        "role": { "enum": ["supports", "contradicts", "context"], "$comment": "contradicts is first-class -- the payload shape of the oracle_gap hint; context is un-graded background" }
+      },
+      "required": ["kind", "ref"],
+      "additionalProperties": false
+    },
+    "tool_profile": {
+      "type": "object",
+      "$comment": "act.md sec 10.2 -- ANNEX A tool-profile registry row (a SECTION of this contract, not a new artifact), keyed by capability_ref. LAW: credentials are fabric-held, executor-injected, never in args/frames/ledgers/Medium; the executor MUST scrub the credential component from receipt provenance before post. A profile without an admissible H0 reconcile probe is inadmissible at H1+ (sec 8.1)",
+      "properties": {
+        "version": { "type": "integer", "$comment": "profile MAJOR; pinned on acts, echoed on receipts" },
+        "harm_floor": { "enum": ["H0", "H1", "H2", "H3"], "$comment": "fabric data; cells never declare their own floor" },
+        "exec": {
+          "anyOf": [
+            { "const": "builtin" },
+            { "type": "string", "pattern": "^mcp://" }
+          ],
+          "$comment": "builtin in-process adapter, or a rented MCP server behind the same gate/receipts/metering (MCP spec pin 2025-11-25); no provider-side tool execution"
+        },
+        "args_schema": { "type": "object", "$comment": "JSON-Schema; validated at gate step b" },
+        "effect_significant": { "type": "array", "items": { "type": "string" }, "$comment": "arg names hashed into effect_id (sec 7.1)" },
+        "h0_certification": { "type": "object", "$comment": "adapters only: the sec 6.2 admission-predicate evidence (args are query content only; credentials adapter-held read-scoped executor-injected; endpoint pinned within the egress allowlist)" },
+        "credential_carrier": { "enum": ["none", "header", "query", "body"], "$comment": "where the ADAPTER key rides; query/body-carrier endpoints REQUIRE scrub verification at admission [SECURITY-SEAM sec 12.1]" },
+        "exfil_channel": { "enum": ["none", "url", "body", "headers"], "$comment": "can cell-authored bytes reach the wire? Feeds the trifecta booleans; url => external_comms derives from egress-allowlist breadth (seat 10's derivation rule; H0 is not exfil-safe -- the EchoLeak lesson, sec 6.2)" },
+        "trifecta": {
+          "type": "object",
+          "$comment": "seat-10 Rule-of-Two inputs (semantics identity-firewall.md B.4; fields live here). Declared values are ADVISORY: B.4 recomputes all three booleans as folds at spawn and at every ingress, and REFUSES admission if declared < recomputed. Gate step h folds profile.trifecta with cell.acquired_trifecta and role.standing_access (LB4)",
+          "properties": {
+            "private_data": { "type": "boolean" },
+            "untrusted_content": { "type": "boolean" },
+            "external_comms": {
+              "anyOf": [{ "type": "boolean" }, { "const": "derived" }],
+              "$comment": "true | false | derived (from exfil_channel x egress); NEVER derived from HTTP method"
+            }
+          },
+          "additionalProperties": false
+        },
+        "reconcile": {
+          "anyOf": [
+            { "type": "null" },
+            {
+              "type": "object",
+              "properties": { "kind": { "type": "string" }, "args": { "type": "object" } },
+              "additionalProperties": false
+            }
+          ],
+          "$comment": "H1+: MANDATORY H0 probe (admission predicate sec 8.1: probe.harm_floor == H0 and probe egress within the role allowlist); H0: null"
+        },
+        "retry_safe": { "anyOf": [{ "const": "provider_idem" }, { "type": "null" }], "$comment": "provider_idem: the provider's idempotency key IS the probe (sec 8 step 3)" },
+        "expectation_default": { "type": "object", "$comment": "optional auto-suppliable losable check (sec 4 expectation shape)" },
+        "pricing": { "type": "string", "$comment": "pricebook:tool.<ref> lane (seat 07); as_of freshness law; no computable worst-case => unreservable => refused" },
+        "isolation_required": { "enum": ["class-0", "class-1", "class-2", "class-3"], "$comment": "class-3 for candidate code, ALWAYS (no degraded fallback)" },
+        "grading_note": { "type": "string", "$comment": "free text consumed by sec 9 docs" }
+      },
+      "required": ["version", "harm_floor", "exec"],
+      "additionalProperties": false
+    },
+    "cost": {
+      "type": "object",
+      "$comment": "the canonical crossing-record cost{} field-group -- exactly six members (R16; pricebook.md 5.2 owns member semantics; escrow truth-home is the Conductor's own ledger, no type=spend on the Medium). act.md sec 3 prints wall_ms as a SIBLING receipt field (5.1.0, R16-conformant); tokens, where present, rides the same way",
+      "properties": {
+        "usd_effective": { "type": "number" },
+        "usd_reserved": { "type": "number" },
+        "sku": { "type": "string" },
+        "purpose": { "enum": ["production", "verification", "oracle_growth", "tool", "maintenance"], "$comment": "acts commit under purpose: tool (sec 10.4); the enum is pricebook.md 5.2's" },
+        "resv_id": { "type": "string", "$comment": "reservation id, or lease:<lane>/<claim> for res:lease drawdowns (sec 10.4)" },
+        "pricebook_version": { "type": "string" }
+      },
+      "additionalProperties": false
+    }
+  }
+}

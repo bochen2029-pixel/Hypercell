@@ -1,0 +1,187 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "hypercell/contracts/role/5.1.0",
+  "title": "role -- the cell role manifest (the depth dial over ONE field space)",
+  "$comment": "Generated mirror of contracts/role.md v5.1.0 (P3 resolution) -- the .md is the source of truth; regenerate on any bump (CONTRACT-HDR-1).",
+  "description": "Root = the role manifest field space (role.md sec 1, complete). Validation is STRICT at authoring/spawn time (unknown fields refused with a typed error -- a typo'd knob must not silently no-op; template R5/L-STRICT-SPAWN) and LIBERAL for every other consumer (unknown fields preserved) -- this mirror models the STRICT operator-boundary shape, hence additionalProperties false throughout. Only `name` is REQUIRED. Defaults [R28]: sec 2 is the table of depth-VARYING defaults keyed by `depth`; depth-INVARIANT fields (comment, prompt, egress, oracle_ref, diversity, max_wager_horizon) carry their default in sec 1 and are deliberately absent from sec 2 (no JSON defaults are baked here for depth-varying fields). standing_access [LB4] and max_wager_horizon [R29] joined the field space in 5.1.0.",
+  "type": "object",
+  "properties": {
+    "name": { "type": "string", "$comment": "REQUIRED. The only field with no default" },
+    "depth": { "enum": ["d0", "d1", "d2", "d3"], "$comment": "selects the DEFAULTS COLUMN (sec 2), nothing else; runtime never branches on depth except the preset loader (L-NO-DEPTH-BRANCH)" },
+    "comment": { "type": "string", "$comment": "free text; never enters the frame" },
+    "provider": {
+      "type": "object",
+      "$comment": "WEIGHTS = the diversity axis; the role PINS it (blind spots follow weights, not endpoints -- F1/F9). Depth is orthogonal to intelligence",
+      "properties": {
+        "weights_family": { "type": "string" },
+        "model": { "type": "string" },
+        "base_url": { "type": ["string", "null"], "$comment": "null -> registry default" },
+        "key_ref": { "type": ["string", "null"], "$comment": "env/secret NAME (never a value); null -> <FAMILY>_API_KEY" },
+        "params": { "type": "object", "$comment": "provider params, e.g. temperature" },
+        "effort": { "type": ["string", "null"], "$comment": "provider effort dial, if the lane has one" }
+      },
+      "additionalProperties": false
+    },
+    "lane_hints": {
+      "type": "object",
+      "$comment": "HINTS ONLY -- the economics plane may override, logged",
+      "properties": {
+        "latency_class": { "enum": ["interactive", "standard", "batch"] },
+        "batch_ok": { "type": "boolean" },
+        "cache_mode": { "type": "string", "$comment": "e.g. auto" }
+      },
+      "additionalProperties": false
+    },
+    "prompt": { "type": "string", "$comment": "the role's system prompt (frame S0 head; positive specification)" },
+    "grounding_mode": { "enum": ["none", "sampled", "required"], "$comment": "the A11 dial -- act.md 9.1 owns the mode semantics (cite-or-abstain is not a legal value; canon #8); a run may RAISE, never lower (L-RAISE-ONLY)" },
+    "capabilities": { "type": "array", "items": { "type": "string" }, "$comment": "router placement (MoE)" },
+    "tools": {
+      "type": "array",
+      "items": {
+        "anyOf": [
+          {
+            "type": "object",
+            "properties": {
+              "ref": { "type": "string", "$comment": "MCP/adapter id" },
+              "profile": { "type": ["string", "null"], "$comment": "TOOL-PROFILE ANNEX id (act.md sec 10 format; carries harm floor, egress allowlist, credential_carrier, trifecta booleans -- declared values are ADVISORY; identity-firewall.md B.4's Rule-of-Two gate RECOMPUTES the fold at spawn and at every ingress, refusing a profile whose declaration is weaker than the recomputation). profile null is REFUSED at spawn for harm >= H1 tools" }
+            },
+            "required": ["ref"],
+            "additionalProperties": false
+          },
+          { "type": "string", "$comment": "a bare-string entry is read as {ref: s, profile: null} (reader liberality)" }
+        ]
+      },
+      "$comment": "identity-firewall.md B.4's Rule-of-Two gate recomputes the trifecta fold at spawn and at every ingress; declared profile trifecta{} is ADVISORY"
+    },
+    "harm_ceiling": { "enum": ["H0", "H1", "H2", "H3"], "$comment": "the membrane gate enforces; a run may LOWER, never raise (L-RAISE-ONLY)" },
+    "egress": { "type": "array", "items": { "type": "string" }, "$comment": "DECLARATION of intended hosts; enforcement = identity-firewall.md; depth-invariant (R28)" },
+    "standing_access": {
+      "type": "array",
+      "items": { "enum": ["operator-memory", "foreign-nucleus", "peer-output-ingestion"] },
+      "$comment": "LB4: declared private-surface access the role may read (closed set). Depth defaults (sec 2): d0/d1 = []; d2/d3 per role. The trifecta private_data leg reads it -- act.md 6.1h at the act gate; identity-firewall.md B.4 folds it with received peer output and operator-memory grants"
+    },
+    "isolate_intent": { "enum": ["pooled", "isolated", "hardened"], "$comment": "HARM-derived default, never depth-derived" },
+    "oracle_ref": { "type": ["string", "null"] },
+    "diversity": {
+      "type": "object",
+      "$comment": "bound by the run manifest's diversity vector (run.md R1 roster)",
+      "properties": {
+        "slot": { "type": ["string", "null"] },
+        "seed": { "$comment": "null, or the bound seed value" },
+        "angle": { "type": ["string", "null"] }
+      },
+      "additionalProperties": false
+    },
+    "budget": {
+      "type": "object",
+      "properties": {
+        "step_usd": { "type": "number" },
+        "lifetime_usd": { "type": "number" },
+        "maintenance_pct": { "type": "number" }
+      },
+      "additionalProperties": false
+    },
+    "max_wager_horizon": {
+      "type": "string",
+      "default": "7d",
+      "$comment": "R29: depth-INVARIANT (default 7d; marked in sec 1, absent from sec 2 per R28). The furthest future a held act may be wagered against; act.md sec 4 reads it and sec 13 promises it -- relocated here in the P3 pass"
+    },
+    "memory": {
+      "type": "object",
+      "$comment": "every knob's mechanism lives in contracts/nucleus.md 5.0",
+      "properties": {
+        "ledger": { "enum": ["none", "full"], "$comment": "none legal at ANY depth -- sealed-set grader cells use it so sealed bytes can never land in a nucleus record (L-SEALED-SET, trust seam)" },
+        "fsync": { "enum": ["gold", "always"], "$comment": "gold = the two laws + group-commit; always = exact v1 fsync-every-append behavior" },
+        "segment_mb": { "type": "integer" },
+        "renders": { "type": "array", "items": { "enum": ["index", "fts", "tkg"] }, "$comment": "tkg implies dark until NUC-3" },
+        "verbs": { "type": "boolean", "$comment": "remember/recall/revise/forget/pin" },
+        "registers": { "type": "array", "items": { "enum": ["narrative", "factual"] } },
+        "pin_budget": { "type": "integer" },
+        "recall_k": { "type": "integer" },
+        "consolidation": {
+          "type": "object",
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "idle_s": { "type": "number" },
+            "min_records": { "type": "integer" },
+            "min_tokens": { "type": "integer" },
+            "budget_pct": { "type": "number", "$comment": "the maintenance line (of lifetime spend)" },
+            "cold_eyes_family": { "type": "string", "$comment": "rotate (default; != L1, rotates per pass) | a pinned family != L1" },
+            "install": { "type": "string", "$comment": "task-boundary -- never mid-task (the cache seam depends on it)" }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "frame": {
+      "type": "object",
+      "$comment": "assembler knobs (nucleus.md sec 7); ratio defaults per depth live in role.md sec 2 -- one table, not duplicated",
+      "properties": {
+        "ratios": {
+          "type": "object",
+          "properties": {
+            "identity": { "type": "number" },
+            "tools": { "type": "number" },
+            "digest": { "type": "number" },
+            "working": { "type": "number" },
+            "retrieved": { "type": "number" },
+            "recap": { "type": "number" },
+            "percept": { "type": "number" },
+            "slack": { "type": "number" }
+          },
+          "additionalProperties": false,
+          "$comment": "S0+S1+S2 ratio-budget overflow at the declared window is REFUSED at spawn (L-STRICT-SPAWN; nucleus.md 7.2 step 5 hysteresis)"
+        },
+        "salience": {
+          "type": "object",
+          "properties": {
+            "w_pin": { "type": "number" },
+            "w_factual": { "type": "number" },
+            "w_task": { "type": "number" },
+            "w_recency": { "type": "number" },
+            "w_ref": { "type": "number" },
+            "half_life": { "type": "number" }
+          },
+          "additionalProperties": false,
+          "$comment": "weights feed SALIENCE_v1 (nucleus.md 7.3); a weight change bumps salience/1.x in every subsequent manifest"
+        },
+        "recap_k": { "type": "integer" },
+        "self_tune": {
+          "type": "object",
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "bounds_pct": { "type": "number" }
+          },
+          "additionalProperties": false,
+          "$comment": "d3: journaled tuning, +/- bounds, never beyond"
+        }
+      },
+      "additionalProperties": false
+    },
+    "wake": {
+      "type": "object",
+      "properties": {
+        "policy": { "enum": ["none", "on_task", "on_mention", "self_clocked"] },
+        "max_idle_s": { "type": ["number", "null"] }
+      },
+      "additionalProperties": false
+    },
+    "anchor": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "every_n_records": { "type": "integer" }
+      },
+      "additionalProperties": false,
+      "$comment": "d3: post ledger head hash to Medium (compiles to a status post -- no new wire type)"
+    }
+  },
+  "required": ["name"],
+  "additionalProperties": false,
+  "$defs": {
+    "role_digest_law": {
+      "$comment": "L-ROLE-DIGEST (role.md sec 4): role_digest = sha256(canon(manifest AFTER defaults expansion)), recorded in the nucleus genesis; frame determinism and cache epochs key on it. Editing a role mid-life is a NEW digest -- a re-manifest event, never silent drift. (Documentation def; not referenced.)"
+    }
+  }
+}
