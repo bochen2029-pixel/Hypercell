@@ -58,3 +58,25 @@ def test_rebuild_from_ledger(tmp_path: Path) -> None:
     assert n2._max_seq() == 6
     assert n2.rebuild() == 6
     n2.close()
+
+
+def test_the_index_is_a_render_not_a_durability_store(tmp_path: Path) -> None:
+    """The ledger is truth; the index is rebuilt from it on every open.
+
+    So the index runs at synchronous=NORMAL, not FULL. Fsyncing a render buys nothing that cannot
+    be regenerated and costs a real sync per record — paying for durability twice is not twice as
+    safe, just slower. Deleting the index entirely must lose nothing.
+    """
+    n = Nucleus(tmp_path, "r1/render/0")
+    for i in range(5):
+        n.append("percept", {"i": i})
+    head, seq = n.head_hash, n.ledger.seq
+    n.close()
+
+    (tmp_path / "r1/render/0" / "index.db").unlink()
+
+    rebuilt = Nucleus(tmp_path, "r1/render/0")
+    assert rebuilt.ledger.seq == seq and rebuilt.head_hash == head
+    assert rebuilt._max_seq() == seq, "the index did not regenerate from the ledger"
+    assert rebuilt.verify().ok
+    rebuilt.close()

@@ -33,11 +33,13 @@ class Nucleus:
         self.ledger = Ledger(self.ledger_path, claim_id=claim_id)
 
         self._db = sqlite3.connect(self.index_path)
-        # Explicit pragmas, not defaults: WAL for concurrent readers, a real busy_timeout so a
-        # contended index waits instead of raising, and FULL so the render survives a hard kill.
-        # (Guard G-DB-DURABLE exists because defaults are not a durability contract -- E3.)
+        # Explicit pragmas, not defaults (G-DB-DURABLE exists because defaults are not a durability
+        # contract -- E3). But NORMAL, not FULL: the index is a RENDER, rebuilt from the ledger on
+        # every open, so fsyncing it buys nothing we cannot regenerate and costs a real sync per
+        # record. Durability belongs to the ledger, which is truth; paying for it twice is not
+        # twice as safe, just slower.
         self._db.execute("PRAGMA journal_mode=WAL")
-        self._db.execute("PRAGMA synchronous=FULL")
+        self._db.execute("PRAGMA synchronous=NORMAL")
         self._db.execute("PRAGMA busy_timeout=5000")
         self._init_index()
 
