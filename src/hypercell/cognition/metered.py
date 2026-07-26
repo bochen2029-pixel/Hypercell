@@ -61,27 +61,39 @@ def metered(cfg: ProviderConfig, gov: Meter | None = None) -> Cognition:
     whose budget is a suggestion.
     """
     inner = build_adapter(cfg)
-    return inner if gov is None else MeteredCognition(inner, cfg.provider.lower(), gov)
+    return inner if gov is None else MeteredCognition(inner, cfg.provider.lower(), gov, cfg.model)
 
 
 class MeteredCognition(Cognition):
     """Wrap any Cognition: enforce the hard-stop before, meter cost after, cap concurrency around."""
 
-    def __init__(self, inner: Cognition, provider: str, gov: Meter) -> None:
+    def __init__(self, inner: Cognition, provider: str, gov: Meter, model: str = "") -> None:
         self.name = f"metered:{inner.name}"
         self._inner = inner
         self._provider = provider
         self._gov = gov
+        #: The estimator needs the lane to price it. Carried with the call rather than stashed on
+        #: the governor: a "last model seen" field is a race the first concurrent run would find.
+        self._model = model or getattr(inner, "model", "")
 
     async def complete(self, messages: Messages, **params: Any) -> CompletionResult:
-        self._gov.check()  # the single hard-stop, before any spend
-        sem = self._gov.semaphore(self._provider)
-        if sem is not None:
-            async with sem:
+        # RESERVE the worst case, then call, then settle at the truth. `check()` alone was F6: it
+        # compares a counter to a cap before a call it cannot price, so the last call goes over and
+        # the hard-stop reports the breach it failed to prevent.
+        resv_id = self._gov.open_call(self._provider, {**params, "model": self._model})
+        try:
+            sem = self._gov.semaphore(self._provider)
+            if sem is not None:
+                async with sem:
+                    result = await self._inner.complete(messages, **params)
+            else:
                 result = await self._inner.complete(messages, **params)
-        else:
-            result = await self._inner.complete(messages, **params)
-        cost = self._gov.record(self._provider, result)
+        except BaseException:
+            # The call did not happen (or did not answer). Release rather than commit: holding
+            # headroom for work that produced nothing starves the run for no reason.
+            self._gov.close_call(resv_id, self._provider, None)
+            raise
+        cost = self._gov.close_call(resv_id, self._provider, result)
         # F26 closed: `cost_usd` was declared in v1 and never populated. The receipt now carries a
         # real number, priced off a dated book.
         return result.model_copy(update={"cost_usd": cost})

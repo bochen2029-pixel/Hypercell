@@ -18,7 +18,7 @@ from typing import Any
 from ..cognition.metered import metered
 from ..common import ids
 from ..common.types import ProviderConfig
-from ..conductor.governor import Governor
+from ..conductor.governor import Escrow, Governor
 
 _CHAT = (
     "You are hypercell, a sovereign swarm-compute fabric the operator commands like a fleet. "
@@ -119,7 +119,14 @@ async def talk_loop(home: str, provider: str, model: str, watch: bool = True) ->
     # chit-chat reply spent dollars nothing booked — an un-metered path in the one surface an
     # operator uses most. VERB-1's AST sweep found it. The governor makes the spend visible and the
     # hard-stop reachable; `metered()` is the only construction site (ONE-METER-1).
-    _router_gov = Governor(usd_cap=float(os.environ.get("HYPERCELL_ROUTER_CAP_USD", "1.0")))
+    _cap = float(os.environ.get("HYPERCELL_ROUTER_CAP_USD", "1.0"))
+    # The router shares the fleet escrow at `home`, so router chatter draws on the same dollars the
+    # runs do. A separate RAM cap per surface is how a fleet ends up over budget with every
+    # individual counter under its own limit.
+    _escrow = Escrow(cap_usd=_cap, home=home)
+    if _escrow.needs_reconcile:
+        _escrow.reconcile()
+    _router_gov = Governor(usd_cap=_cap, escrow=_escrow, scope="purpose:router")
     router = metered(ProviderConfig(provider=provider, model=model), _router_gov)
     print(f"hypercell commander  |  provider={provider}  |  home={home}")
     if watch:

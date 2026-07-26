@@ -7,12 +7,15 @@ limits. Prices are advisory defaults (USD per 1M tokens: input, output); pin the
 from __future__ import annotations
 
 import asyncio
+import threading
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Literal
 
 from ..cognition.base import CompletionResult
+from .ledger import EscrowLedger
 from .pricebook import Pricebook, Purpose, Quote, default_pricebook
 
 # `_PRICE` is DELETED (slice ECON-S1). It hard-coded twelve providers and, worse, fell back to a
@@ -58,6 +61,48 @@ class Reservation:
         return max(0.0, self.committed - self.worst)
 
 
+#: The fleet scope, which every other scope nests inside. A run cap that did not also draw down the
+#: fleet would let N runs each spend the whole budget -- the shape the ECON-2 drill exists to catch.
+FLEET = "fleet"
+
+
+def scope_chain(scope: str) -> tuple[str, ...]:
+    """Every scope a charge on `scope` must be counted against, innermost first.
+
+    Scopes are `fleet`, `run:<id>` and `purpose:<name>`, and they NEST. A reserve on `run:a` holds
+    against `run:a` and against `fleet`, because the operator's cap is a statement about total money
+    and not about any single run's share of it. Flat scopes -- one cap applied independently to
+    every string -- are not a weaker version of this; they are the absence of a fleet cap wearing
+    its name.
+    """
+    return (scope,) if scope == FLEET else (scope, FLEET)
+
+
+@dataclass(frozen=True)
+class Admission:
+    """The receipt for a group reserve: what was admitted, what was not, and why (ECON-S2).
+
+    A group that partly fits is the interesting case. Silently admitting the part that fits would
+    start work the caller believes is fully funded; silently refusing the whole would waste headroom
+    that exists. So the escrow admits what fits, says so, and lets the caller decide.
+    """
+
+    admitted: list[Reservation] = field(default_factory=list)
+    refused: list[tuple[str, float, str]] = field(default_factory=list)
+
+    @property
+    def whole(self) -> bool:
+        return not self.refused
+
+    @property
+    def total_admitted(self) -> float:
+        return sum(r.worst for r in self.admitted)
+
+
+class NotReconciled(EscrowRefused):
+    """A resumed escrow tried to reserve before reconciling what it inherited (ECON-L8)."""
+
+
 class Escrow:
     """Scope-capped reservations, plus the `res:lease` micro-escrow for H0 tool lanes.
 
@@ -81,26 +126,87 @@ class Escrow:
         quantum_usd: float = 0.01,
         fleet_slots: int = 8,
         now: Callable[[], float] = time.monotonic,
+        home: Path | str | None = None,
+        scope_caps: dict[str, float] | None = None,
+        fsync: bool = True,
     ) -> None:
         self.cap_usd = cap_usd
         self.quantum_usd = quantum_usd
         self.fleet_slots = fleet_slots
         self._now = now
+        #: Per-scope ceilings. Absent an entry a scope inherits the fleet cap, which bounds it but
+        #: does not carve it out -- `fleet` is always the binding one.
+        self.scope_caps = dict(scope_caps or {})
         self.reservations: dict[str, Reservation] = {}
         self.records: list[dict[str, Any]] = []
         #: Interactions with the fleet-scoped escrow. ECON-LEASE-1 asserts a lease draw adds none.
         self.fleet_roundtrips = 0
+        #: Concurrency. The 16-way ECON-2 drill runs real threads, and `committed <= cap` under
+        #: concurrency is not a property you get from a read-then-write on a dict.
+        self._lock = threading.RLock()
+        self._seq = 0
+
+        #: Durable home. Without one this is the RAM meter -- the very null ECON-L8 names -- so the
+        #: in-memory mode is available but must be asked for by leaving `home` out.
+        self.ledger = EscrowLedger(home, fsync=fsync) if home is not None else None
+        self._needs_reconcile = False
+        if self.ledger is not None:
+            self._hydrate()
+
+    # ---------------------------------------------------------------- resume (ECON-L8)
+
+    def _hydrate(self) -> None:
+        """Rebuild the reservation table from the ledger. Spend is a fold, never a counter."""
+        assert self.ledger is not None
+        state = self.ledger.fold()
+        for rid, row in state.reservations.items():
+            self.reservations[rid] = Reservation(
+                resv_id=rid, scope=str(row["scope"]), cls=row["cls"], worst=float(row["worst"]),
+                committed=float(row["committed"]), state=row["state"],
+                lane=str(row["lane"]), holder=str(row["holder"]),
+                opened_at=float(row["opened_at"] or 0.0), ttl_s=float(row["ttl_s"]),
+            )
+        self._seq = len(self.reservations)
+        # A fold that found records means this process INHERITED a budget rather than opening one.
+        # Until it reconciles, it does not know what it already owes, and a reserve made in that
+        # state is the L8 leak: the cap remembered, the spending forgotten.
+        self._needs_reconcile = state.resumed
+
+    @property
+    def needs_reconcile(self) -> bool:
+        return self._needs_reconcile
+
+    def _record(self, kind: str, **fields: Any) -> None:
+        """One write path for both homes, so the RAM list can never disagree with the file."""
+        entry = {"kind": kind, **fields}
+        self.records.append(entry)
+        if self.ledger is not None:
+            self.ledger.append(kind, **fields)  # type: ignore[arg-type]
 
     # ---------------------------------------------------------------- scope accounting
 
-    def reserved(self, scope: str = "fleet") -> float:
-        return sum(r.headroom for r in self.reservations.values() if r.scope == scope and r.state == "HELD")
+    def _in_scope(self, scope: str) -> list[Reservation]:
+        """Every reservation that charges `scope` — including inner scopes nested inside it."""
+        return [r for r in self.reservations.values() if scope in scope_chain(r.scope)]
 
-    def committed(self, scope: str = "fleet") -> float:
-        return sum(r.committed for r in self.reservations.values() if r.scope == scope)
+    def cap_for(self, scope: str = FLEET) -> float:
+        return self.scope_caps.get(scope, self.cap_usd)
 
-    def available(self, scope: str = "fleet") -> float:
-        return self.cap_usd - self.committed(scope) - self.reserved(scope)
+    def reserved(self, scope: str = FLEET) -> float:
+        return sum(r.headroom for r in self._in_scope(scope) if r.state == "HELD")
+
+    def committed(self, scope: str = FLEET) -> float:
+        return sum(r.committed for r in self._in_scope(scope))
+
+    def available(self, scope: str = FLEET) -> float:
+        """Headroom left in `scope` — bounded by every scope it nests inside, not just its own.
+
+        Taking the MINIMUM is the whole nesting rule: a run with $10 of its own cap left cannot
+        spend it when the fleet has $2, or the fleet cap would be advice.
+        """
+        return min(
+            self.cap_for(s) - self.committed(s) - self.reserved(s) for s in scope_chain(scope)
+        )
 
     # ---------------------------------------------------------------- reserve / commit / release
 
@@ -114,50 +220,83 @@ class Escrow:
         holder: str = "",
         ttl_s: float = 300.0,
     ) -> Reservation:
-        """Atomic and refusing: either the whole `worst` is held, or nothing is and we raise."""
-        self.fleet_roundtrips += 1
-        if worst > self.available(scope):
-            raise EscrowRefused(
-                f"reserve ${worst:.4f} on scope '{scope}' exceeds available "
-                f"${self.available(scope):.4f} (cap ${self.cap_usd:.4f}) — refused whole, never partial"
+        """Atomic and refusing: either the whole `worst` is held, or nothing is and we raise.
+
+        Reserving the WORST case before the call is the F6 fix. The null checked `spent >= cap`
+        before a call whose price it could not know, so the last call always went over: a $0.0005
+        cap stopped at $0.0006. You cannot hard-stop on a number you only learn afterwards.
+        """
+        with self._lock:
+            if self._needs_reconcile:
+                raise NotReconciled(
+                    "this escrow was resumed from a ledger and has not reconciled yet. It knows its "
+                    "cap and not yet its spending, and reserving in that state is the L8 leak: the "
+                    "budget renews itself on every crash. Call reconcile() first."
+                )
+            self.fleet_roundtrips += 1
+            if worst > self.available(scope):
+                raise EscrowRefused(
+                    f"reserve ${worst:.4f} on scope '{scope}' exceeds available "
+                    f"${self.available(scope):.4f} (cap ${self.cap_for(scope):.4f}) — refused whole, "
+                    "never partial"
+                )
+            self._seq += 1
+            resv = Reservation(
+                resv_id=f"rsv_{self._seq:06d}",
+                scope=scope,
+                cls=cls,
+                worst=worst,
+                lane=lane,
+                holder=holder,
+                opened_at=self._now(),
+                ttl_s=ttl_s,
             )
-        resv = Reservation(
-            resv_id=f"rsv_{len(self.reservations) + 1:06d}",
-            scope=scope,
-            cls=cls,
-            worst=worst,
-            lane=lane,
-            holder=holder,
-            opened_at=self._now(),
-            ttl_s=ttl_s,
-        )
-        self.reservations[resv.resv_id] = resv
-        self.records.append({"kind": "reserve", "resv_id": resv.resv_id, "cls": cls, "worst": worst})
-        return resv
+            # Durable BEFORE held. A crash between the two costs a reservation that is held and
+            # unused, which the sweeper reconciles; the other order costs one that was used and
+            # never recorded, and nothing recovers that.
+            self._record("reserve", resv_id=resv.resv_id, cls=cls, worst=worst, scope=scope,
+                         lane=lane, holder=holder, opened_at=resv.opened_at, ttl_s=ttl_s)
+            self.reservations[resv.resv_id] = resv
+            return resv
+
+    def reserve_group(
+        self, requests: list[tuple[str, float]], *, scope: str = FLEET,
+        cls: ReservationClass = "res:sync",
+    ) -> Admission:
+        """Reserve several at once, admitting what fits. Returns the partial-admission receipt.
+
+        Taken under ONE lock so the group sees a single view of the budget: a competing reserve
+        interleaved halfway through would make the receipt describe a state that never existed.
+        Requests are honoured in the order given -- the caller's priority, not the escrow's opinion
+        of it.
+        """
+        admitted: list[Reservation] = []
+        refused: list[tuple[str, float, str]] = []
+        with self._lock:
+            for name, worst in requests:
+                try:
+                    admitted.append(self.reserve(worst, scope=scope, cls=cls, holder=name))
+                except EscrowRefused as exc:
+                    refused.append((name, worst, str(exc)))
+        return Admission(admitted=admitted, refused=refused)
 
     def commit(self, resv_id: str, usd: float) -> Reservation:
         """Settle. Committing more than `worst` is an OVERRUN — committed anyway, and flagged."""
-        resv = self.reservations[resv_id]
-        resv.committed += usd
-        resv.state = "SETTLED"
-        overrun = resv.committed > resv.worst
-        self.records.append(
-            {
-                "kind": "commit",
-                "resv_id": resv_id,
-                "usd": usd,
-                # In-doubt spend is REAL spend. An overrun is booked and indicts the estimator; it is
-                # never quietly clamped to the reservation, which would make the ledger a wish.
-                "overrun": overrun,
-            }
-        )
-        return resv
+        with self._lock:
+            resv = self.reservations[resv_id]
+            resv.committed += usd
+            resv.state = "SETTLED"
+            # In-doubt spend is REAL spend. An overrun is booked and indicts the estimator; it is
+            # never quietly clamped to the reservation, which would make the ledger a wish.
+            self._record("commit", resv_id=resv_id, usd=usd, overrun=resv.committed > resv.worst)
+            return resv
 
     def release(self, resv_id: str, reason: str) -> Reservation:
-        resv = self.reservations[resv_id]
-        resv.state = "RELEASED"
-        self.records.append({"kind": "release", "resv_id": resv_id, "reason": reason})
-        return resv
+        with self._lock:
+            resv = self.reservations[resv_id]
+            resv.state = "RELEASED"
+            self._record("release", resv_id=resv_id, reason=reason)
+            return resv
 
     # ---------------------------------------------------------------- the lease
 
@@ -178,12 +317,13 @@ class Escrow:
         renew. The draw is still booked: refusing to record spend that happened would make the
         overshoot invisible, and an invisible bound is not a bound.
         """
-        resv = self.reservations[resv_id]
-        if resv.cls != "res:lease":
-            raise EscrowRefused(f"{resv_id} is {resv.cls}; only a res:lease is self-metered")
-        resv.committed += usd
-        self.records.append({"kind": "draw", "resv_id": resv_id, "usd": usd})
-        return resv.committed <= resv.worst
+        with self._lock:
+            resv = self.reservations[resv_id]
+            if resv.cls != "res:lease":
+                raise EscrowRefused(f"{resv_id} is {resv.cls}; only a res:lease is self-metered")
+            resv.committed += usd
+            self._record("draw", resv_id=resv_id, usd=usd)
+            return resv.committed <= resv.worst
 
     def renew(self, resv_id: str) -> Reservation:
         """Renewal-reconcile: settle what the old lease actually spent, then grant a fresh quantum."""
@@ -214,6 +354,9 @@ class Escrow:
         """
         receipts = receipts or {}
         settled: list[Reservation] = []
+        # Clear the gate FIRST: the settling below reserves nothing, but `commit`/`release` run
+        # through the same object and a resumed escrow must be able to finish its own recovery.
+        self._needs_reconcile = False
         for resv in self.still_held():
             if resv.cls == "res:sync":
                 self.release(resv.resv_id, reason="res:sync folds to zero on resume")
@@ -233,7 +376,7 @@ class Escrow:
         """Every tick: a HELD reservation past its ttl is reconciled, **never blind-released**."""
         stale = [r for r in self.still_held() if self._now() - r.opened_at > r.ttl_s]
         for resv in stale:
-            self.records.append({"kind": "sweep", "resv_id": resv.resv_id, "action": "reconcile"})
+            self._record("sweep", resv_id=resv.resv_id, action="reconcile")
         return stale
 
 
@@ -244,8 +387,15 @@ class Governor:
         per_provider_concurrency: dict[str, int] | None = None,
         *,
         pricebook: Pricebook | None = None,
+        escrow: Escrow | None = None,
+        scope: str = FLEET,
     ) -> None:
         self.usd_cap = usd_cap
+        #: The durable, fleet-scoped budget. Without one the cap is a RAM counter that forgets its
+        #: spending on every restart while remembering its ceiling -- the L8 leak, in the generous
+        #: direction. `drive()` and the commander both supply one now.
+        self.escrow = escrow
+        self.scope = scope
         self.spent = 0.0
         self.spend_records: list[dict[str, Any]] = []
         self._book = pricebook or default_pricebook()
@@ -266,11 +416,66 @@ class Governor:
         )
 
     def check(self) -> None:
-        """The hard-stop: raise BEFORE spending once the cap is reached."""
-        if self.spent >= self.usd_cap:
+        """The hard-stop: raise BEFORE spending once the cap is reached.
+
+        Kept, and no longer the only guard. On its own this is F6: it can only compare what has
+        already been spent, so it lets through a call it cannot price and discovers the overshoot
+        afterwards. `open_call` is what makes the stop exact.
+        """
+        spent = self.escrow.committed(self.scope) if self.escrow is not None else self.spent
+        cap = self.escrow.cap_for(self.scope) if self.escrow is not None else self.usd_cap
+        if spent >= cap:
+            raise BudgetExceeded(f"budget hard-stop: spent ${spent:.4f} >= cap ${cap:.4f}")
+
+    # ---------------------------------------------------------------- reserve-before-call (F6)
+
+    def worst_case_usd(self, params: dict[str, Any]) -> float:
+        """The pessimistic ceiling for one call, priced off the dated book.
+
+        Deliberately pessimistic: it assumes the model emits `max_tokens` and prices the prompt at
+        the output rate when it cannot see one. An estimate that errs low would reintroduce the
+        overshoot it exists to prevent, and an over-reservation costs only headroom that is
+        released seconds later. N4' sharpens this with `est_tokens_total` from the frame manifest.
+        """
+        max_out = int(params.get("max_tokens") or params.get("max_output_tokens") or 4096)
+        est_in = int(params.get("est_prompt_tokens") or 8192)
+        sku = Pricebook.sku_key(str(params.get("model", "")), str(params.get("provider", "")))
+        row = self._book.skus.get(sku)
+        if row is None:
+            # No priced row: reserve the whole remaining headroom rather than guess a number. An
+            # unknown price is not a cheap price (the deleted `_PRICE` fallback taught us that).
+            # This is deliberately crippling -- one such call fills the budget -- because a fabric
+            # that cannot price a lane should stop, not proceed at a number it made up.
+            return max(0.0, self.escrow.cap_for(self.scope) if self.escrow else self.usd_cap)
+        return est_in / 1e6 * float(row["input"]) + max_out / 1e6 * float(row["output"])
+
+    def open_call(self, provider: str, params: dict[str, Any]) -> str | None:
+        """Hold the worst case before the call. Raises `BudgetExceeded` when it will not fit."""
+        self.check()
+        if self.escrow is None:
+            return None
+        worst = self.worst_case_usd({**params, "provider": provider})
+        try:
+            return self.escrow.reserve(worst, scope=self.scope, cls="res:sync").resv_id
+        except EscrowRefused as exc:
             raise BudgetExceeded(
-                f"budget hard-stop: spent ${self.spent:.4f} >= cap ${self.usd_cap:.4f}"
-            )
+                f"the worst case for this call (${worst:.4f}) does not fit the remaining headroom "
+                f"(${self.escrow.available(self.scope):.4f}). Refused BEFORE the call, which is the "
+                f"whole difference from the null: {exc}"
+            ) from exc
+
+    def close_call(self, resv_id: str | None, provider: str, result: Any) -> float:
+        """Settle at the truth. The held remainder goes straight back to the scope."""
+        if result is None:
+            # The call never answered. Release rather than commit: holding headroom for work that
+            # produced nothing starves the run, and booking a cost for it would be a lie.
+            if resv_id is not None and self.escrow is not None:
+                self.escrow.release(resv_id, "call did not complete")
+            return 0.0
+        usd = self.record(provider, result)
+        if resv_id is not None and self.escrow is not None:
+            self.escrow.commit(resv_id, usd)
+        return usd
 
     def record(self, provider: str, result: CompletionResult, *, purpose: Purpose = "production") -> float:
         """Book the spend and keep the SPEND record. The fold, not a RAM counter, is the truth."""

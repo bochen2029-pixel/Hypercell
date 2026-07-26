@@ -14,7 +14,7 @@ from ...cognition.metered import MeteredCognition
 from ...common import ids
 from ...common.types import Outcome, ProviderConfig, Role
 from ...medium.bus import open_medium
-from ..governor import BudgetExceeded, Governor
+from ..governor import BudgetExceeded, Escrow, Governor
 from .converge import run_oracle
 from .driver import TOPOLOGIES, Convergence, ScoringEvent
 from .schedule import Arm, ucb1
@@ -62,7 +62,18 @@ async def run_drive(
         "You are a cell in a swarm solving a shared goal. Produce ONE solution artifact. "
         "Output ONLY the artifact (for code: the source), with no prose and no markdown fences."
     )
-    gov = Governor(usd_cap=usd_cap, per_provider_concurrency=per_provider_concurrency or {})
+    # ECON-S2: the budget is a DURABLE FLEET escrow, not a per-run RAM counter. Two runs under one
+    # home now share one cap, and a resumed run inherits what it already spent instead of being
+    # handed the whole budget again (the L8 leak, which fails in the generous direction).
+    escrow = Escrow(cap_usd=usd_cap, home=home)
+    if escrow.needs_reconcile:
+        escrow.reconcile()
+    gov = Governor(
+        usd_cap=usd_cap,
+        per_provider_concurrency=per_provider_concurrency or {},
+        escrow=escrow,
+        scope=f"run:{run_id}",
+    )
     culture = f"drive-{run_id}"
     medium = open_medium(home)
     sandbox = Path(home) / "_sandbox" / run_id

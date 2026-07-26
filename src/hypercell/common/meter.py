@@ -23,6 +23,20 @@ class Meter(Protocol):
         """Raise BEFORE any spend once the cap is reached. The hard-stop that cannot be bypassed."""
         ...
 
+    def open_call(self, provider: str, params: dict[str, Any]) -> str | None:
+        """RESERVE the worst case before the call. Returns a reservation id, or None if unfunded.
+
+        This is the half `check()` cannot do. `check()` compares a counter against a cap *before* a
+        call whose price it does not yet know, so the last call always goes over -- F6 measured it
+        as $0.0006 against a $0.0005 cap. You cannot hard-stop on a number you learn afterwards, so
+        the escrow holds the pessimistic ceiling first and settles the truth after.
+        """
+        ...
+
+    def close_call(self, resv_id: str | None, provider: str, result: Any) -> float:
+        """Settle the reservation at what actually happened and book the spend."""
+        ...
+
     def record(self, provider: str, result: Any) -> float:
         """Book what a completed call cost. Returns the effective USD."""
         ...
