@@ -1,0 +1,1 @@
+SQLite's write-ahead log mode allows readers to continue while a writer appends. WAL does not work correctly on network filesystems, where locking is unreliable.

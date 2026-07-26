@@ -1,0 +1,1 @@
+RFC 8785 defines JSON Canonicalization Scheme. Object members are sorted by their UTF-16 code units. Numbers are serialized using the ECMAScript Number-to-String algorithm.
