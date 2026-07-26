@@ -1,12 +1,14 @@
-# hypercell on k3s — the conductor + its state PVC + a service. The default substrate target.
-# Build the image and import it into k3s:  docker build -t hypercell:local -f images/Dockerfile .
-#   then:  docker save hypercell:local | sudo k3s ctr images import -   (or push to a registry)
+# hypercell on k3s — the conductor, its state PVC, and a service. The default substrate target.
+#
+# Apply the namespace first (it carries the Pod Security baseline):
+#   kubectl apply -f deploy/k3s/ns.yaml
+#   kubectl apply -f deploy/k3s/conductor.yaml
+#
+# Build and load the image with nerdctl straight into k3s's own containerd namespace — the image
+# must land in `k8s.io` or the kubelet will never see it (guard G-IMAGE-IN-K3S, lived defect E28):
+#   sudo nerdctl -n k8s.io build -t hypercell:local -f images/Dockerfile .
+#
 # Provider keys:  kubectl -n hypercell create secret generic hypercell-providers --from-env-file=.env
-apiVersion: v1
-kind: Namespace
-metadata:
-  name: hypercell
----
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
@@ -25,29 +27,74 @@ metadata:
   namespace: hypercell
 spec:
   replicas: 1
+  # Recreate, never RollingUpdate: the state PVC is ReadWriteOnce, so a rolling update deadlocks —
+  # the new pod waits for a volume the old pod will not release until the new pod is Ready.
+  # The Medium is single-writer by contract anyway; two conductors on one log is not a thing we want
+  # to survive, it is a thing we want to be impossible.
+  strategy:
+    type: Recreate
   selector:
     matchLabels: { app: conductor }
   template:
     metadata:
       labels: { app: conductor }
     spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001              # so the mounted PVC is writable by the unprivileged user
+        seccompProfile: { type: RuntimeDefault }
       containers:
         - name: conductor
           image: hypercell:local
           imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
           env:
             - { name: HYPERCELL_ROLE, value: conductor }
             - { name: HYPERCELL_API_HOST, value: "0.0.0.0" }
             - { name: HYPERCELL_API_PORT, value: "8787" }
+            - { name: HYPERCELL_HOME, value: /var/lib/hypercell }
           envFrom:
             - secretRef: { name: hypercell-providers }
           ports:
-            - containerPort: 8787
+            - { name: http, containerPort: 8787 }
+          # Liveness answers "is the process wedged"; readiness answers "may it take traffic".
+          # They are deliberately the same endpoint but different failure budgets: a slow start
+          # must not kill the pod, so startupProbe owns the boot window and liveness only takes
+          # over once the process has proven it can serve at all.
+          startupProbe:
+            httpGet: { path: /health, port: http }
+            periodSeconds: 3
+            failureThreshold: 20        # up to 60s to boot before we call it dead
+          readinessProbe:
+            httpGet: { path: /health, port: http }
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          livenessProbe:
+            httpGet: { path: /health, port: http }
+            periodSeconds: 20
+            timeoutSeconds: 2
+            failureThreshold: 3
+          resources:
+            # A memory limit only binds if the memory cgroup controller is present and enforcing —
+            # guard G-CGROUP checks exactly that. On a box where it is missing this limit is
+            # advisory, and the preflight says so rather than letting it look enforced.
+            requests: { cpu: 100m, memory: 256Mi }
+            limits: { memory: 1Gi }
           volumeMounts:
             - { name: state, mountPath: /var/lib/hypercell }
+            - { name: tmp, mountPath: /tmp }   # readOnlyRootFilesystem needs a writable scratch
       volumes:
         - name: state
           persistentVolumeClaim: { claimName: conductor-state }
+        - name: tmp
+          emptyDir: {}
 ---
 apiVersion: v1
 kind: Service
@@ -57,4 +104,4 @@ metadata:
 spec:
   selector: { app: conductor }
   ports:
-    - { port: 8787, targetPort: 8787 }
+    - { name: http, port: 8787, targetPort: http }

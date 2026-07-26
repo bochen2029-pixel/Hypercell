@@ -4,6 +4,7 @@
   hc resume --claim ID [--provider mock]
   hc fleet [ls]
   hc provider set NAME
+  hc preflight [--json]
 """
 from __future__ import annotations
 
@@ -46,6 +47,25 @@ def ask(
     r = r.model_copy(update={"provider": ProviderConfig(provider=provider, model=model or default_model)})
     cell = build_cell(_home(), claim, r)
     typer.echo(asyncio.run(cell.ask(prompt, idem=idem)))
+
+
+@app.command()
+def preflight(
+    as_json: bool = typer.Option(False, "--json", help="emit the status{kind:preflight} body instead of text"),
+) -> None:
+    """Probe the box before trusting it with gold (ARCHITECTURE §11; falsifier PREFLIGHT-LITE-1).
+
+    Exit code is the verdict, so CI and the day-1 golden path can gate on it:
+    0 = GREEN, 1 = DEGRADED (runs proceed, labelled), 2 = RED (a spine guard failed; the fabric halts).
+    """
+    import json as _json
+
+    from ..substrate.k3s import run_preflight
+    from ..substrate.preflight import render
+
+    report = run_preflight(_home())
+    typer.echo(_json.dumps(report.as_status_body(), indent=2) if as_json else render(report))
+    raise typer.Exit({"GREEN": 0, "DEGRADED": 1, "RED": 2}[report.verdict])
 
 
 @app.command()
