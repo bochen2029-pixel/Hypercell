@@ -476,6 +476,11 @@ class Governor:
         }
 
     @property
+    def book(self) -> Pricebook:
+        """The dated pricebook — the quote plane's read seam (ECON-S3). Read-only by convention."""
+        return self._book
+
+    @property
     def spent(self) -> float:
         """Spend as a FOLD, never a counter (S-KG-4; the F16/G5 fix).
 

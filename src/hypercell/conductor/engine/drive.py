@@ -15,9 +15,10 @@ from ...common import ids
 from ...common.types import Outcome, ProviderConfig, Role
 from ...medium.bus import open_medium
 from ..governor import BudgetExceeded, Escrow, Governor
+from ..quote import quote_pull
 from .converge import run_oracle
 from .driver import TOPOLOGIES, Convergence, ScoringEvent
-from .schedule import Arm, ucb1
+from .schedule import Arm, RunBook, charge, dollar_ucb
 from .topology import _ANGLES
 
 
@@ -102,6 +103,16 @@ async def run_drive(
 
     arms = [Arm(name=c.role.name) for c in cells]
     by_name = {c.role.name: c for c in cells}
+    # ECON-S3: the dollar-UCB's inputs. One quote per arm's lane (drive's default cells share a
+    # lane, so this is often one number fanned out — the index degrades gracefully to score-order
+    # there, which is correct: with equal prices, dollars and pulls agree).
+    e_hat = {
+        c.role.name: quote_pull(
+            gov.book, model=c.role.provider.model, provider=c.role.provider.provider
+        ).usd_expected
+        for c in cells
+    }
+    run_book = RunBook()
     champion_arm: str | None = None
     champion_score = -1.0
     best_code: dict[str, str] = {}
@@ -112,11 +123,12 @@ async def run_drive(
     reason = "max-steps"
 
     for step in range(1, max_steps + 1):
-        arm = ucb1(arms)
+        arm = dollar_ucb(arms, e_hat=e_hat, book=run_book)
         if arm is None:
             reason = "no-arms"
             break
         cell = by_name[arm.name]
+        usd_before = gov.spent  # the fold, so the step's cost is a subtraction, not a guess
         try:
             code = await cell.produce(goal, list(best_code.values()))
         except BudgetExceeded:
@@ -130,6 +142,15 @@ async def run_drive(
                     artifact={"path": str(path)})
         receipt = run_oracle(oracle_cmd, str(path))
         arm.visits += 1
+        # R5: the candidate's dollars burn the arm; an INVALID grading is an APPARATUS failure and
+        # books run-level — the arm's standing is untouched by a grader that broke (the tri-state
+        # already excludes INVALID from convergence for the same reason: not evidence either way).
+        step_usd = max(0.0, gov.spent - usd_before)
+        charge(
+            arm, step_usd,
+            attribution="apparatus" if receipt.outcome == Outcome.invalid else "candidate",
+            book=run_book,
+        )
         if receipt.outcome != Outcome.invalid and receipt.score > arm.best:
             arm.best = receipt.score
             best_code[arm.name] = code

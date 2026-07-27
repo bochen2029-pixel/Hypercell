@@ -23,9 +23,23 @@ def coverage(needs: list[str], ad: CellAd) -> float:
     return len(need & set(ad.capabilities)) / len(need)
 
 
-def route(needs: list[str], ads: list[CellAd]) -> CellAd | None:
-    """The gate: highest capability coverage, then liveness, then lowest load. None if none covers."""
+def route(
+    needs: list[str], ads: list[CellAd], *, usd: dict[str, float] | None = None
+) -> CellAd | None:
+    """The gate: coverage, then liveness, then load — then PRICE (ECON-S3).
+
+    The price term is a tiebreak, deliberately last: routing exists to put work where it can be
+    done, and a router that chose cheapness over capability would save dollars by buying failures.
+    Between two cells that cover the need equally at equal load, the cheaper lane wins. `usd` maps
+    cell -> quoted next-pull cost (`conductor/quote.quote_pull`); a cell missing from the map ranks
+    as the MOST expensive among its ties — an unknown price is not a cheap price.
+    """
     candidates = [a for a in ads if a.live and coverage(needs, a) > 0]
     if not candidates:
         return None
-    return max(candidates, key=lambda a: (coverage(needs, a), -a.load))
+    prices = usd or {}
+    worst = max(prices.values(), default=0.0) + 1.0
+    return max(
+        candidates,
+        key=lambda a: (coverage(needs, a), -a.load, -prices.get(a.cell, worst)),
+    )
