@@ -48,6 +48,10 @@ class Reservation:
     state: ReservationState = "HELD"
     lane: str = ""
     holder: str = ""
+    #: The provider-side handle a `res:durable` leg settles against (a batch id, an async job id).
+    #: Carried on the reservation and in the ledger record so a RESUME knows which provider object
+    #: to reconcile -- an in-doubt batch with no handle is un-reconcilable by construction.
+    batch_id: str = ""
     opened_at: float = 0.0
     ttl_s: float = 300.0
 
@@ -197,6 +201,7 @@ class Escrow:
                 # errs toward holding a stale reservation slightly longer -- and reconcile(), not
                 # the sweeper, is the resume path's real cleanup anyway.
                 opened_at=self._now(), ttl_s=float(row["ttl_s"]),
+                batch_id=str(row.get("batch_id", "")),
             )
         self._seq = len(self.reservations)
         # A fold that found records means this process INHERITED a budget rather than opening one.
@@ -251,6 +256,7 @@ class Escrow:
         lane: str = "",
         holder: str = "",
         ttl_s: float = 300.0,
+        batch_id: str = "",
     ) -> Reservation:
         """Atomic and refusing: either the whole `worst` is held, or nothing is and we raise.
 
@@ -282,12 +288,14 @@ class Escrow:
                 holder=holder,
                 opened_at=self._now(),
                 ttl_s=ttl_s,
+                batch_id=batch_id,
             )
             # Durable BEFORE held. A crash between the two costs a reservation that is held and
             # unused, which the sweeper reconciles; the other order costs one that was used and
             # never recorded, and nothing recovers that.
             self._record("reserve", resv_id=resv.resv_id, cls=cls, worst=worst, scope=scope,
-                         lane=lane, holder=holder, opened_at=resv.opened_at, ttl_s=ttl_s)
+                         lane=lane, holder=holder, opened_at=resv.opened_at, ttl_s=ttl_s,
+                         batch_id=batch_id)
             self.reservations[resv.resv_id] = resv
             return resv
 
@@ -318,11 +326,41 @@ class Escrow:
         """Settle. Committing more than `worst` is an OVERRUN — committed anyway, and flagged."""
         with self._lock:
             resv = self.reservations[resv_id]
+            if resv.cls == "res:durable":
+                raise EscrowRefused(
+                    f"{resv_id} is res:durable: a batch leg settles ONLY through settle_durable(), "
+                    "carrying the corr of a receipted H0 reconciliation act. A bare commit here "
+                    "would be the fabric asserting what the provider did without having asked it."
+                )
             resv.committed += usd
             resv.state = "SETTLED"
             # In-doubt spend is REAL spend. An overrun is booked and indicts the estimator; it is
             # never quietly clamped to the reservation, which would make the ledger a wish.
             self._record("commit", resv_id=resv_id, usd=usd, overrun=resv.committed > resv.worst)
+            return resv
+
+    def settle_durable(self, resv_id: str, usd: float, *, receipt_corr: str) -> Reservation:
+        """Settle a `res:durable` leg from a RECEIPTED reconciliation act (act.md §8, money twin).
+
+        The batch leg's truth lives provider-side. The only honest way to learn it is an H0 act —
+        the provider usage/batch query — which is gated, journaled and receipted like any act. The
+        receipt's corr rides in the ledger record, so an auditor can walk from the settlement to
+        the evidence that justified it. No corr, no settlement: an unreceipted number here would be
+        actor self-report wearing an accountant's hat.
+        """
+        if not receipt_corr:
+            raise EscrowRefused(
+                "a res:durable settles only from a receipted reconciliation act; without the "
+                "receipt corr the settlement would be an assertion, not an observation"
+            )
+        with self._lock:
+            resv = self.reservations[resv_id]
+            if resv.cls != "res:durable":
+                raise EscrowRefused(f"{resv_id} is {resv.cls}; settle_durable is the batch-leg path")
+            resv.committed += usd
+            resv.state = "SETTLED"
+            self._record("commit", resv_id=resv_id, usd=usd, receipt_corr=receipt_corr,
+                         overrun=resv.committed > resv.worst)
             return resv
 
     def release(self, resv_id: str, reason: str) -> Reservation:
@@ -430,12 +468,27 @@ class Governor:
         #: direction. `drive()` and the commander both supply one now.
         self.escrow = escrow
         self.scope = scope
-        self.spent = 0.0
+        self._spent_ram = 0.0
         self.spend_records: list[dict[str, Any]] = []
         self._book = pricebook or default_pricebook()
         self._sems: dict[str, asyncio.Semaphore] = {
             p: asyncio.Semaphore(n) for p, n in (per_provider_concurrency or {}).items()
         }
+
+    @property
+    def spent(self) -> float:
+        """Spend as a FOLD, never a counter (S-KG-4; the F16/G5 fix).
+
+        With an escrow this reads the durable fold: `committed(scope)`, rebuilt from the escrow
+        ledger on construction — so a freshly-built Governor over a resumed home already KNOWS what
+        the dead process spent. The null was `self.spent = 0.0` + `+=`: a number that remembered
+        its ceiling and forgot its history on every restart, which is how a cap renews itself on
+        every crash. Without an escrow (bare tests only) it falls back to the RAM sum, which is the
+        null, kept only so the no-escrow mode stays honest about what it is.
+        """
+        if self.escrow is not None:
+            return self.escrow.committed(self.scope)
+        return self._spent_ram
 
     def quote(self, provider: str, result: CompletionResult) -> Quote:
         """Price one completion off the dated book. Raises `UnknownLane` rather than guessing."""
@@ -524,7 +577,7 @@ class Governor:
     def record(self, provider: str, result: CompletionResult, *, purpose: Purpose = "production") -> float:
         """Book the spend and keep the SPEND record. The fold, not a RAM counter, is the truth."""
         quote = self.quote(provider, result)
-        self.spent += quote.usd_effective
+        self._spent_ram += quote.usd_effective
         self.spend_records.append(
             {
                 "kind": "spend",
@@ -546,12 +599,18 @@ class Governor:
         """Σ over the SPEND records. Equals `self.spent` — the counter is a cache of this, not a source."""
         total = sum(float(r["cost"]["usd_effective"]) for r in self.spend_records)
         reserved = sum(float(r["cost"]["usd_reserved"]) for r in self.spend_records)
-        return {
+        fold: dict[str, Any] = {
             "usd_effective": total,
             "usd_reserved": reserved,
             "calls": len(self.spend_records),
             "pricebook_version": self._book.version,
         }
+        if self.escrow is not None:
+            # The DURABLE side of the two-log agreement RE-4 will certify: span cost{} sums on one
+            # side, this escrow-ledger fold on the other. Carried here so `hc top`-class surfaces
+            # can already show both numbers next to each other.
+            fold["escrow_committed_usd"] = self.escrow.committed(self.scope)
+        return fold
 
     def semaphore(self, provider: str) -> asyncio.Semaphore | None:
         return self._sems.get(provider)

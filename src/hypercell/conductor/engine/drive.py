@@ -65,6 +65,9 @@ async def run_drive(
     # ECON-S2: the budget is a DURABLE FLEET escrow, not a per-run RAM counter. Two runs under one
     # home now share one cap, and a resumed run inherits what it already spent instead of being
     # handed the whole budget again (the L8 leak, which fails in the generous direction).
+    # S-KG-4: a fresh Governor over this escrow FOLDS its spend from the ledger on construction --
+    # the fresh-instance pattern is now fold-hydration, so a resumed run opens knowing what it
+    # already spent instead of being handed the whole budget again.
     escrow = Escrow.for_home(home, cap_usd=usd_cap)
     if escrow.needs_reconcile:
         escrow.reconcile()

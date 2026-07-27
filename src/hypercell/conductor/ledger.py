@@ -98,6 +98,7 @@ class EscrowLedger:
                     "worst": float(rec.get("worst", 0.0)), "committed": 0.0, "state": "HELD",
                     "lane": rec.get("lane", ""), "holder": rec.get("holder", ""),
                     "opened_at": rec.get("opened_at", 0.0), "ttl_s": float(rec.get("ttl_s", 300.0)),
+                    "batch_id": str(rec.get("batch_id", "")),
                 }
             elif kind in ("commit", "draw") and rid in state.reservations:
                 state.reservations[rid]["committed"] += float(rec.get("usd", 0.0))
