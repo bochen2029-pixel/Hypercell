@@ -523,6 +523,20 @@ def assemble_frame(
             f"window ({w_use} tok) at tick {tick}; this frame was never viable"
         )
 
+    # Fail-closed on a body that contains the segment delimiter. U+241E in content would forge a
+    # segment boundary — the same in-band-escape hazard SEC-a' refused for the TRUST frame, here for
+    # the CACHE frame: an injected boundary makes "frame minus delimiters == concat(items)" false,
+    # so the manifest could no longer account for every byte. A percept carrying this control char is
+    # pathological; refusing the tick is honest where silently mis-accounting it is not. (The c′
+    # audit caught this: a body with U+241E broke byte-coverage rather than being rejected.)
+    for section in SECTION_ORDER:
+        for it in packed[section]:
+            if SEG_DELIM in it.body:
+                raise FrameError(
+                    f"item '{it.ref}' in {SECTION_NAME[section]} contains the segment delimiter "
+                    "(U+241E); it would forge a segment boundary and break byte-coverage. Refused."
+                )
+
     # Step 8: join sections with fixed delimiters; compute per-segment bytes + hashes.
     segments: list[Segment] = []
     frame_parts: list[str] = []
@@ -690,7 +704,11 @@ def frame_tick(
     """
     head = nucleus.ledger.seq
     last_ckpt = _last_checkpoint(nucleus)
-    recap = nucleus.records_of_kind("action")[-role.recap_k():] if hasattr(nucleus, "records_of_kind") else []
+    # `k` guards the -0 slice trap: `records[-0:]` is `records[:]`, the WHOLE list, so a recap_k of
+    # 0 would recap EVERYTHING instead of nothing (the c′ audit caught this). `[-k:] if k else []`.
+    k = role.recap_k()
+    io_records = nucleus.records_of_kind("action") if hasattr(nucleus, "records_of_kind") else []
+    recap = io_records[-k:] if k else []
     candidates = gather_candidates(
         role=role, percept=percept,
         checkpoint_state=last_ckpt, pending=nucleus.pending() if hasattr(nucleus, "pending") else [],

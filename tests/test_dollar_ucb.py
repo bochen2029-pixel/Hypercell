@@ -360,3 +360,22 @@ async def test_drive_still_converges_with_the_dollar_index_wired(tmp_path: Path)
         provider="stub", model="stub", max_steps=6, stable_k=1, cells=cells,
     )
     assert res.converged and res.champion_arm == "arm0"
+
+
+# ================================================================ c' audit regressions
+
+
+def test_the_name_tiebreak_picks_the_earlier_name_even_for_a_prefix() -> None:
+    """The `_neg_name` tuple-of-negated-ordinals compared WRONG for prefixes: "a"->(-97,),
+    "ab"->(-97,-98), and (-97,) < (-97,-98), so max() picked "ab" over "a" -- the longer name, not
+    the earlier one. Sorting by name first fixes it."""
+    from hypercell.conductor.engine.schedule import Arm, RunBook, dollar_ucb
+
+    tie = dollar_ucb([Arm(name="ab", best=0.5), Arm(name="a", best=0.5)],
+                     e_hat={"a": 0.01, "ab": 0.01}, book=RunBook())
+    assert tie.name == "a", f"the prefix tiebreak picked {tie.name!r}, not the earlier 'a'"
+
+    # Same-length names were already correct; assert they stay so.
+    tie2 = dollar_ucb([Arm(name="b", best=0.5), Arm(name="a", best=0.5)],
+                      e_hat={"a": 0.01, "b": 0.01}, book=RunBook())
+    assert tie2.name == "a"

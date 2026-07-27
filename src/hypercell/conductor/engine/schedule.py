@@ -131,13 +131,15 @@ def dollar_ucb(
         bonus = c * math.sqrt(math.log(n_total) / n_a) if n_total > 1.0 else 0.0
         return (a.best + bonus) / max(costs[a.name], 0.01 * u0)
 
-    # Deterministic: highest index, ties to the cheaper lane, then to the earlier name.
-    return max(live, key=lambda a: (index(a), -costs[a.name], _neg_name(a.name)))
-
-
-def _neg_name(name: str) -> tuple[int, ...]:
-    """Descending-name tiebreak encoded for use inside a max() key."""
-    return tuple(-ord(ch) for ch in name)
+    # Deterministic: highest index, ties to the cheaper lane, then to the EARLIER name.
+    #
+    # The earlier-name tiebreak is done by pre-sorting, not by negating the name into the max key.
+    # A tuple-of-negated-ordinals compares WRONG for prefixes: "a" -> (-97,), "ab" -> (-97,-98), and
+    # (-97,) < (-97,-98), so max() picked "ab" over "a" — the LONGER name, not the earlier one (a
+    # real bug the c′ audit caught). `max` returns the FIRST maximal element, so sorting by name
+    # ascending first makes a full tie resolve to the lexicographically earliest name, correctly and
+    # without hand-rolled ordinal arithmetic.
+    return max(sorted(live, key=lambda a: a.name), key=lambda a: (index(a), -costs[a.name]))
 
 
 # ---------------------------------------------------------------------------- 2-D prune / resurrect

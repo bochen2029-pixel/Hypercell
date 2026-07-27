@@ -571,7 +571,17 @@ class Governor:
             return None
         worst = self.worst_case_usd({**params, "provider": provider})
         try:
-            return self.escrow.reserve(worst, scope=self.scope, cls="res:sync").resv_id
+            # `holder=self.scope` attributes the reservation to its issuing run/scope, so the
+            # per-issuer reservation cap (SEC-c′) actually bounds the metered path. Without it every
+            # metered reservation had holder="" and the DoS cap — drilled and correct in isolation —
+            # never fired for the calls that matter (the c′ audit caught this). No cap is configured
+            # by default, so this changes nothing until an operator sets one.
+            return self.escrow.reserve(worst, scope=self.scope, cls="res:sync", holder=self.scope).resv_id
+        except ReservationDoS:
+            # A DoS-cap hit is NOT a budget breach and must not masquerade as one: the budget has
+            # room, this issuer just holds too many reservations. Let it through as itself so the
+            # caller can tell "you are out of money" from "you are opening too many holds".
+            raise
         except EscrowRefused as exc:
             raise BudgetExceeded(
                 f"the worst case for this call (${worst:.4f}) does not fit the remaining headroom "

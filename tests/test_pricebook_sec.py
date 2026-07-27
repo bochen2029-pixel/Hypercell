@@ -244,3 +244,33 @@ def test_the_cap_refuses_before_locking_headroom() -> None:
         e.reserve(0.01, scope="fleet", holder="hog")
     e.reserve(0.5, scope="fleet", holder="victim")  # plenty of headroom left for a real caller
     assert e.available("fleet") > 0
+
+
+def test_the_dos_cap_now_bounds_the_metered_path() -> None:
+    """open_call passed no holder, so every metered reservation was holder="" and the DoS cap never
+    fired on the path that matters. It now attributes reservations to the issuing scope."""
+    from hypercell.conductor.governor import Escrow, Governor, ReservationDoS
+
+    escrow = Escrow(cap_usd=100.0, per_issuer_reservation_cap=2)
+    gov = Governor(usd_cap=100.0, escrow=escrow, scope="run:a")
+    gov.open_call("stub", {"model": "stub"})
+    gov.open_call("stub", {"model": "stub"})
+    with pytest.raises(ReservationDoS):
+        gov.open_call("stub", {"model": "stub"})
+
+
+def test_a_dos_cap_hit_is_not_disguised_as_a_budget_breach() -> None:
+    """The budget has room; the issuer just holds too many. ReservationDoS must not be re-wrapped as
+    BudgetExceeded -- the caller has to tell 'out of money' from 'too many holds'."""
+    from hypercell.conductor.governor import BudgetExceeded, Escrow, Governor, ReservationDoS
+
+    escrow = Escrow(cap_usd=1000.0, per_issuer_reservation_cap=1)
+    gov = Governor(usd_cap=1000.0, escrow=escrow, scope="run:a")
+    gov.open_call("stub", {"model": "stub"})
+    try:
+        gov.open_call("stub", {"model": "stub"})
+        raise AssertionError("expected a refusal")
+    except ReservationDoS:
+        pass  # correct
+    except BudgetExceeded:
+        raise AssertionError("a DoS-cap hit was disguised as a budget breach") from None
