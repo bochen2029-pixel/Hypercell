@@ -1,0 +1,113 @@
+# The class-3 sandbox — gVisor RuntimeClass, deny-all egress, and the pod template (slice S9.2).
+#
+# Class 3 is where UNTRUSTED code runs: a candidate the swarm produced, a `code.run@sandbox` act,
+# anything whose author is a language model. Three separate mechanisms have to hold at once, and
+# each one is here because the other two do not cover it:
+#
+#   1. gVisor (runsc) — a user-space kernel between the workload and the host syscall table. A
+#      container escape then has to get through runsc first, and runsc is not the host kernel.
+#   2. deny-all NetworkPolicy — no egress, no DNS. The trifecta's third leg is cut at the network
+#      layer rather than by asking the workload not to call out.
+#   3. restricted PodSecurity — non-root, no privilege escalation, every capability dropped, a
+#      read-only root filesystem. Defence in depth: if runsc is somehow bypassed, the workload is
+#      still an unprivileged process that owns nothing.
+#
+# **"Present-but-broken is a real state."** Applying this file does NOT make the box class-3; the
+# preflight's d' battery has to find each piece actually working. A RuntimeClass object whose
+# handler does not exist in containerd will happily be created and then fail every pod that names
+# it — which is why G-GVISOR smoke-tests a real pod instead of reading the object.
+---
+apiVersion: node.k8s.io/v1
+kind: RuntimeClass
+metadata:
+  name: gvisor
+# The containerd handler this maps to. It must exist in config-v3.toml.tmpl on every node, or pods
+# naming this class stay Pending forever with a scheduling error nobody reads.
+handler: runsc
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: hypercell-sandbox
+  labels:
+    # Restricted PSS, enforced (not merely audited): a namespace that only WARNS about privileged
+    # pods is a namespace that runs them.
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted
+---
+# Deny ALL ingress and egress in the sandbox namespace. An empty podSelector matches every pod, and
+# naming both policy types with no rules denies both directions.
+#
+# Egress denial includes DNS. That is deliberate and it is the point: a workload that can resolve a
+# name can exfiltrate through the resolver, and "we only allowed DNS" is how data leaves.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: deny-all
+  namespace: hypercell-sandbox
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+---
+# The class-3 pod template. The harness (substrate/harness.py, slice S9.3) runs as this; the
+# candidate is a nobody-subprocess inside it, so the runner observes the exit rather than trusting
+# the candidate to report one.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: hypercell-sandbox-template
+  namespace: hypercell-sandbox
+  labels:
+    app.kubernetes.io/name: hypercell
+    hypercell.io/sandbox-class: "3"
+spec:
+  runtimeClassName: gvisor
+  automountServiceAccountToken: false   # a token in the pod is a credential the workload can use
+  restartPolicy: Never                  # a candidate gets one run; a retry is a new, journaled act
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 65534                    # nobody
+    runAsGroup: 65534
+    fsGroup: 65534
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: sandbox-harness
+      image: hypercell/sandbox-harness@sha256:0000000000000000000000000000000000000000000000000000000000000000
+      # ^ DIGEST-PINNED placeholder. S9.4 replaces this with the real digest from the nerdctl
+      #   pipeline; a tag here would let the image change under a running fleet (E28).
+      imagePullPolicy: IfNotPresent
+      command: ["/usr/local/bin/sandbox-harness"]
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        privileged: false
+        capabilities:
+          drop: ["ALL"]
+      resources:
+        limits:
+          cpu: "1"
+          memory: "512Mi"
+          ephemeral-storage: "1Gi"
+        requests:
+          cpu: "250m"
+          memory: "128Mi"
+      volumeMounts:
+        # /out is the ONLY writable path: the harness seals it into a content-addressed artifact
+        # (manifest.json + sha256 per file) and that seal is what makes differential
+        # re-attribution sound. A writable root would let a candidate hide bytes outside the seal.
+        - name: out
+          mountPath: /out
+        - name: tmp
+          mountPath: /tmp
+  volumes:
+    - name: out
+      emptyDir:
+        sizeLimit: "512Mi"
+    - name: tmp
+      emptyDir:
+        sizeLimit: "64Mi"
