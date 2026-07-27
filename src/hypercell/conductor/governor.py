@@ -604,11 +604,22 @@ class Governor:
         """Σ over the SPEND records. Equals `self.spent` — the counter is a cache of this, not a source."""
         total = sum(float(r["cost"]["usd_effective"]) for r in self.spend_records)
         reserved = sum(float(r["cost"]["usd_reserved"]) for r in self.spend_records)
+        # The cache hit-rate is the `hc top` number ECON-CACHE-1 bars at >=60% (ARCH §7): a fold
+        # over the per-call token records, using the canonical `read/(input+read+write)` formula so
+        # a lane that paid huge writes cannot look thrifty. A low rate indicts frame ORDERING first.
+        from .cache import canonical_hit_rate
+
+        tok_in = sum(int(r["tokens"]["prompt"]) for r in self.spend_records)
+        tok_read = sum(int(r["tokens"]["cache_read"]) for r in self.spend_records)
+        tok_write = sum(int(r["tokens"]["cache_write"]) for r in self.spend_records)
         fold: dict[str, Any] = {
             "usd_effective": total,
             "usd_reserved": reserved,
             "calls": len(self.spend_records),
             "pricebook_version": self._book.version,
+            "cache_hit_rate": canonical_hit_rate(
+                input_tokens=tok_in, cache_read_tokens=tok_read, cache_write_tokens=tok_write
+            ),
         }
         if self.escrow is not None:
             # The DURABLE side of the two-log agreement RE-4 will certify: span cost{} sums on one

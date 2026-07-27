@@ -23,6 +23,12 @@ skus:
     output: 0.28
     cache_read: 0.014
     cache_write: 0.14
+    # ECON-S4 cache mechanics (pricebook.md §1). Multiplier form the warm-quote uses; auto-caches on
+    # a 64-token granularity with no explicit breakpoint marker; undocumented TTL -> pessimistic 300.
+    cache_read_mult: 0.1
+    cache_granularity_tokens: 64
+    warmer_release: on_complete
+    cache_ttl_s: 300
     as_of: "2026-07-16"
     source: provider-published
     verified: true
@@ -40,8 +46,35 @@ skus:
     input: 0.15
     output: 0.60
     cache_read: 0.075
+    # OpenAI auto-caches org-wide with NO explicit breakpoint (max_cache_breakpoints absent) above a
+    # 1024-token minimum; the warm-quote reads cache_read_mult.
+    cache_read_mult: 0.5
+    cache_min_prompt_tokens: 1024
+    cache_scope: org
+    warmer_release: on_complete
+    cache_ttl_s: 300
     as_of: "2026-07-16"
     source: provider-published
+    verified: true
+
+  claude-opus-4.8@anthropic/standard:
+    # From the pricebook annex (contracts/pricebook.md §1). The only lane with explicit breakpoints
+    # (max 4) and the only documented on_ttft warmer release, so the realization's non-default paths
+    # are exercised against a real dated row rather than a fixture.
+    weights_family: anthropic
+    input: 10.00
+    output: 50.00
+    cache_read: 1.00
+    cache_write: 12.50
+    cache_read_mult: 0.1
+    cache_write_mult: 1.25
+    cache_min_prompt_tokens: 512
+    max_cache_breakpoints: 4
+    warmer_release: on_ttft
+    cache_ttl_s: 300
+    cache_ttl_refresh_on_hit: true
+    as_of: "2026-07-16"
+    source: "platform.claude.com/docs/en/about-claude/pricing"
     verified: true
 
   glm-4.5-flash@glm/standard:
