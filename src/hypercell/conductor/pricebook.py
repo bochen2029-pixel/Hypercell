@@ -22,12 +22,23 @@ the real one is how a budget stays honest without over-charging the operator.
 """
 from __future__ import annotations
 
+import hashlib
+import hmac
+import os
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Literal
 
 import yaml
+
+from ..common.canon import canon_bytes
+
+#: The env var holding the operator's pricebook key. Absent ⇒ signing is not enforced (pre-Stage-1b
+#: grace); present ⇒ the book MUST carry a matching signature or it is refused on load. At Stage-1b
+#: this becomes an ed25519 verify against an off-box operator key (identity-firewall §pricebook-annex);
+#: the interface — sign over the content digest, verify on load, refuse mismatch — does not change.
+PRICEBOOK_KEY_ENV = "HYPERCELL_PRICEBOOK_KEY"
 
 REPO_PRICEBOOK = Path(__file__).resolve().parents[3] / "contracts" / "pricebook.yaml"
 
@@ -41,6 +52,60 @@ Purpose = Literal["production", "verification", "oracle_growth", "tool", "mainte
 
 class PricebookError(Exception):
     """The book itself is unusable."""
+
+
+class PricebookUnsigned(PricebookError):
+    """A key is configured (signing is required) but the book carries no signature."""
+
+
+class PricebookForged(PricebookError):
+    """The book's signature does not verify — a poisoned book, refused on load (SEC-PRICE)."""
+
+
+def content_digest(data: dict[str, Any]) -> str:
+    """`sha256` over the canonical content, EXCLUDING the signature (a self-signing field cannot
+    sign itself). This is what the operator signs, so tampering with any priced row — a
+    cheapest-lane redirect, an inflated price to starve the fleet — breaks the signature.
+
+    The `version` semver stays IN the digest: a version bump is a content change like any other, and
+    signing it means a book cannot be re-labelled without re-signing. (Spec drift noted: pricebook.md
+    §1 folds the digest into `version` itself; here the semver stays a human label that spend records
+    already cite, and the digest is computed alongside it — same guarantee, no churn to those cites.)
+    """
+    body = {k: v for k, v in data.items() if k != "signature"}
+    return "sha256:" + hashlib.sha256(canon_bytes(body)).hexdigest()
+
+
+def sign_pricebook(data: dict[str, Any], key: str) -> str:
+    """The operator's detached signature over the content digest.
+
+    T0 primitive: HMAC-SHA256 with the operator key. Symmetric, and honest about it — the point of
+    THIS slice is that the loader REFUSES an unsigned or tampered book; the ed25519 upgrade
+    (operator key off-box, asymmetric) is SEC-d′'s, and it drops into `verify` unchanged.
+    """
+    digest = content_digest(data)
+    return "hmac-sha256:" + hmac.new(key.encode("utf-8"), digest.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def verify_pricebook(data: dict[str, Any], key: str) -> None:
+    """Refuse unless the book carries a signature that verifies under `key`. Raises on failure.
+
+    `hmac.compare_digest` is deliberate: a plain `==` on the signature leaks timing, and a pricebook
+    is exactly the kind of long-lived operator asset an attacker can probe at leisure.
+    """
+    sig = data.get("signature")
+    if not sig:
+        raise PricebookUnsigned(
+            f"a pricebook key is configured ({PRICEBOOK_KEY_ENV}) but the book carries no signature. "
+            "An unsigned book under an enforcing key is refused: sign it with sign_pricebook() first."
+        )
+    expected = sign_pricebook(data, key)
+    if not hmac.compare_digest(str(sig), expected):
+        raise PricebookForged(
+            "the pricebook signature does not verify — the content was altered after signing, or "
+            "signed under a different key. A poisoned book redirects fleet routing or starves it; "
+            "refused on load (SEC-PRICE)."
+        )
 
 
 class UnknownLane(Exception):
@@ -90,6 +155,8 @@ class Pricebook:
     def __init__(self, data: dict[str, Any], *, path: Path | None = None) -> None:
         self.path = path
         self.version = str(data.get("version", "0.0.0"))
+        self.content_digest = content_digest(data)
+        self.signed = bool(data.get("signature"))
         defaults = data.get("defaults", {}) or {}
         self.max_age_days = int(defaults.get("max_age_days", 30))
         self.stale_mult = float(defaults.get("stale_mult", 1.25))
@@ -108,7 +175,15 @@ class Pricebook:
     # ---------------------------------------------------------------- loading
 
     @classmethod
-    def load(cls, path: Path | str | None = None) -> Pricebook:
+    def load(cls, path: Path | str | None = None, *, key: str | None = None) -> Pricebook:
+        """Load and, if a key is configured, VERIFY the operator signature before trusting a price.
+
+        `key` defaults to the env var. A configured key makes signing mandatory: an unsigned or
+        wrong-signature book is refused here, before a single lane is priced — because a poisoned
+        book is not a parse error, it is a routing attack, and the only safe time to catch it is
+        before its numbers are believed. With no key configured the book loads unsigned (pre-Stage-1b
+        grace); a book that IS signed still gets verified whenever a key is available to check it.
+        """
         p = Path(path) if path else REPO_PRICEBOOK
         if not p.exists():
             raise PricebookError(f"no pricebook at {p}; the fabric will not price from memory")
@@ -118,6 +193,10 @@ class Pricebook:
             raise PricebookError(f"{p} does not parse: {exc}") from exc
         if not isinstance(data, dict):
             raise PricebookError(f"{p} is not a mapping")
+
+        resolved_key = key if key is not None else os.environ.get(PRICEBOOK_KEY_ENV)
+        if resolved_key:
+            verify_pricebook(data, resolved_key)
         return cls(data, path=p)
 
     # ---------------------------------------------------------------- pricing

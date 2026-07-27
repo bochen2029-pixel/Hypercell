@@ -107,6 +107,10 @@ class NotReconciled(EscrowRefused):
     """A resumed escrow tried to reserve before reconciling what it inherited (ECON-L8)."""
 
 
+class ReservationDoS(EscrowRefused):
+    """One issuer tried to exceed its per-issuer reservation cap (SEC-c′ reservation-DoS defense)."""
+
+
 class Escrow:
     """Scope-capped reservations, plus the `res:lease` micro-escrow for H0 tool lanes.
 
@@ -132,6 +136,7 @@ class Escrow:
         now: Callable[[], float] = time.monotonic,
         home: Path | str | None = None,
         scope_caps: dict[str, float] | None = None,
+        per_issuer_reservation_cap: int | None = None,
         fsync: bool = True,
     ) -> None:
         self.cap_usd = cap_usd
@@ -141,6 +146,11 @@ class Escrow:
         #: Per-scope ceilings. Absent an entry a scope inherits the fleet cap, which bounds it but
         #: does not carve it out -- `fleet` is always the binding one.
         self.scope_caps = dict(scope_caps or {})
+        #: SEC-c′: the per-issuer reservation cap (reservation-DoS defense). A single principal that
+        #: could open unbounded HELD reservations would lock the whole budget as reserved-but-unspent
+        #: — a denial of service the escrow inflicts on itself, no provider required. `None` = no cap
+        #: (the pre-SEC-c′ behaviour, kept for the bare unit escrows that never had an adversary).
+        self.per_issuer_reservation_cap = per_issuer_reservation_cap
         self.reservations: dict[str, Reservation] = {}
         self.records: list[dict[str, Any]] = []
         #: Interactions with the fleet-scoped escrow. ECON-LEASE-1 asserts a lease draw adds none.
@@ -271,6 +281,18 @@ class Escrow:
                     "cap and not yet its spending, and reserving in that state is the L8 leak: the "
                     "budget renews itself on every crash. Call reconcile() first."
                 )
+            if self.per_issuer_reservation_cap is not None and holder:
+                held = sum(
+                    1 for r in self.reservations.values()
+                    if r.holder == holder and r.state == "HELD"
+                )
+                if held >= self.per_issuer_reservation_cap:
+                    raise ReservationDoS(
+                        f"issuer '{holder}' already holds {held} reservations, at the per-issuer cap "
+                        f"of {self.per_issuer_reservation_cap}. Refused: one principal holding "
+                        "unbounded reservations would lock the whole budget as reserved-but-unspent, "
+                        "a denial of service the escrow would inflict on itself."
+                    )
             self.fleet_roundtrips += 1
             if worst > self.available(scope):
                 raise EscrowRefused(
