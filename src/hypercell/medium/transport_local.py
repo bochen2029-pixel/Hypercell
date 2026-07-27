@@ -28,11 +28,12 @@ from pathlib import Path
 from typing import Any
 
 from ..common import clock
+from ..common.anchoring import Anchoring
 from ..common.canon import canon_bytes
 from ..common.ledger import chain_step, leaf
 from .firewall import PostPolicy, check_post
 from .wake import Doorbell, WakeStats, wait
-from .wire import BODY_HARD_CAP, AclDenied, is_known
+from .wire import BODY_HARD_CAP, AclDenied, durability_of, is_known
 
 #: Per-culture chain anchor (wire.md §5.2). Chain-versioned, never wire-versioned: a wire semver
 #: bump must not re-anchor existing chains.
@@ -61,6 +62,24 @@ class Filter:
     round: int | None = None
 
 
+def _hole_boundary(compacts: list[dict[str, Any]], frm: int, to: int) -> str | None:
+    """The `chain.post` a compact record asserts for the hole spanning [frm, to). None if none does.
+
+    The compact record is itself chained and anchored, so trusting its boundary is not trusting a
+    bare claim -- it is trusting a claim that was sealed under the same construction as everything
+    else. A hole with no such record is an unexplained gap, which verify() calls a failure.
+    """
+    for rec in compacts:
+        body = rec.get("body")
+        if not isinstance(body, dict):
+            continue
+        for run in body.get("runs", []) or []:
+            if int(run["from"]) == frm and int(run["to"]) == to - 1:
+                chain = run.get("chain") or {}
+                return str(chain.get("post", "")) or None
+    return None
+
+
 def _anchor(culture: str) -> bytes:
     import hashlib
 
@@ -70,10 +89,20 @@ def _anchor(culture: str) -> bytes:
 class LocalMedium:
     """T0. One SQLite file, one dense sequence per culture, one chain per culture."""
 
-    def __init__(self, home: Path | str, *, policy: PostPolicy | None = None) -> None:
+    def __init__(
+        self,
+        home: Path | str,
+        *,
+        policy: PostPolicy | None = None,
+        anchor: Anchoring | None = None,
+    ) -> None:
         #: The post-ACL's conditional rows (R14). Medium-side, so no caller can widen its own row
         #: by passing a flag; the conductor sets it from the frozen manifest at run open.
         self.policy = policy or PostPolicy()
+        #: The Conductor's anchor log (wire.md §5.4), injected as a PROTOCOL so L2 never imports L3
+        #: (`common/anchoring.py`). None is a real mode: the chain stays self-consistent and
+        #: `verify()` reports "consistent, unanchored" rather than pretending it was corroborated.
+        self.anchor = anchor
         self.dir = Path(home) / "_medium"
         self.dir.mkdir(parents=True, exist_ok=True)
         self._db = sqlite3.connect(self.dir / "medium.db", isolation_level=None)
@@ -225,6 +254,13 @@ class LocalMedium:
         # Ring AFTER the commit: a bell for a record that then rolls back would wake a reader to
         # find nothing, and a hint that lies is worse than a hint that is slow.
         self._doorbell.ring(culture)
+        # The anchor is offered AFTER the row is committed and BEFORE the caller is told the post
+        # landed. For D-gold that ordering is the durability edge (§5.4 duty 2): `note` fsyncs the
+        # entry, so a gold post returns only once an external copy of its hash is on disk. Cadence
+        # anchors ride the same call and cost nothing extra 63 posts out of 64.
+        if self.anchor is not None:
+            is_gold = durability_of(msg_type, body) == "gold"
+            self.anchor.note(seq, new_hash, gold=is_gold, compact=(msg_type == "compact"))
         return Posted(seq=seq, culture=culture, hash=new_hash)
 
     # ---------------------------------------------------------------- reading
@@ -288,13 +324,58 @@ class LocalMedium:
     def submissions(self, culture: str, round: int) -> list[dict[str, Any]]:
         return self.read(culture, filt=Filter(types=("submission",), round=round))
 
+    # ---------------------------------------------------------------- retention (§9.2 step 6)
+
+    def delete_range(self, culture: str, seqs: list[int]) -> int:
+        """Physically remove exactly these seqs. **Only ever called AFTER the compact record is
+        anchored** (§9.2 step 6) — this method does not check that, because the ordering is the
+        caller's law to keep and a method that enforced it would need to re-derive the whole plan.
+
+        Per-seq, never a range sweep: a cite-pinned keeper can sit inside a compacted span, and a
+        `WHERE seq BETWEEN a AND b` would take it with the rest. The plan already excluded keepers,
+        so deleting precisely the planned set is what preserves them.
+        """
+        if not seqs:
+            return 0
+        marks = ",".join("?" for _ in seqs)
+        cur = self._db.execute(
+            f"DELETE FROM messages WHERE culture=? AND seq IN ({marks})", (culture, *seqs)
+        )
+        return int(cur.rowcount)
+
     # ---------------------------------------------------------------- integrity
 
     def verify(self, culture: str) -> dict[str, Any]:
-        """Re-derive the per-culture chain. Names the first bad seq and every void-at-fold record."""
+        """Re-derive the per-culture chain across holes, match the anchors, and name the zombies.
+
+        Three things a chain alone cannot tell you, all reported here rather than folded into one
+        boolean:
+
+        * **holes** — a compacted span breaks contiguity by design. The walk resumes from the
+          `compact` record's own `chain.post` (itself chained and anchored), so a verifier trusts a
+          recorded boundary rather than guessing across the gap (§9.2 step 7).
+        * **anchors** — a rewrite that recomputes every stored hash leaves the chain perfectly
+          self-consistent. `anchored` is a THIRD state next to ok/failed: "consistent, unanchored"
+          is the honest verdict when no anchor file exists, and reporting it as `ok` would sell a
+          weaker guarantee than the caller thinks they bought.
+        * **zombies** — rows still present inside a compacted span (a crash between §9.2 steps 5
+          and 6). Named, never silently deleted: a verifier that cleaned up would be mutating the
+          log it audits.
+        """
         head = _anchor(culture)
         void: list[int] = []
-        for msg in self.read(culture, include_void=True):
+        hashes_by_seq: dict[int, str] = {}
+        holes_crossed = 0
+        expected_seq = 1
+
+        # Collect the compact records BEFORE walking. A compact record is posted after the span it
+        # describes, so the hole at seq 1 is explained by a record at seq 200 — gathering them
+        # during the walk means the earliest hole is always unexplained when it is reached. (Found
+        # by running the loop end to end: verify failed on a correctly-compacted log.)
+        rows = list(self.read(culture, include_void=True))
+        compacts: list[dict[str, Any]] = [m for m in rows if str(m["type"]) == "compact"]
+
+        for msg in rows:
             if msg["void_by_acl"]:
                 void.append(msg["seq"])
             known = (
@@ -306,11 +387,52 @@ class LocalMedium:
             # Verifying over only the columns THIS build knows would let a future field be edited
             # freely -- the chain would still verify, which is worse than not chaining at all.
             record.update({k: v for k, v in msg.items() if k not in known and k not in ("hash", "void_by_acl")})
+            # A gap in seq means a compacted span. Resume from the boundary the compact record
+            # asserted, if one covers this hole; otherwise the gap is unexplained and that IS a
+            # failure -- records do not simply go missing.
+            if int(msg["seq"]) != expected_seq:
+                post = _hole_boundary(compacts, expected_seq, int(msg["seq"]))
+                if post is None:
+                    return {
+                        "ok": False, "first_bad_seq": expected_seq, "void_by_acl": void,
+                        "reason": f"unexplained gap at seq {expected_seq}: no compact record covers it",
+                        "anchored": None, "holes_crossed": holes_crossed, "zombies": [],
+                    }
+                head = bytes.fromhex(post.removeprefix("sha256:"))
+                holes_crossed += 1
+
             expected = "sha256:" + chain_step(head, leaf(record)).hex()
             if expected != msg["hash"]:
-                return {"ok": False, "first_bad_seq": msg["seq"], "void_by_acl": void}
+                return {
+                    "ok": False, "first_bad_seq": msg["seq"], "void_by_acl": void,
+                    "reason": "chain break", "anchored": None,
+                    "holes_crossed": holes_crossed, "zombies": [],
+                }
             head = bytes.fromhex(expected.removeprefix("sha256:"))
-        return {"ok": True, "first_bad_seq": None, "void_by_acl": void}
+            hashes_by_seq[int(msg["seq"])] = str(msg["hash"])
+            expected_seq = int(msg["seq"]) + 1
+
+        from .compactor import find_zombies
+
+        zombies = find_zombies(sorted(hashes_by_seq), compacts)
+        result: dict[str, Any] = {
+            "ok": True, "first_bad_seq": None, "void_by_acl": void,
+            "holes_crossed": holes_crossed, "zombies": zombies, "anchored": None,
+        }
+        if self.anchor is not None and hasattr(self.anchor, "check"):
+            spans = [
+                (int(r["from"]), int(r["to"]))
+                for rec in compacts
+                if isinstance(rec.get("body"), dict)
+                for r in (rec["body"].get("runs", []) or [])
+            ]
+            report = self.anchor.check(hashes_by_seq, compacted_spans=spans)
+            result["anchored"] = not report.unanchored and report.ok
+            result["anchor_verdict"] = report.verdict
+            if not report.ok:
+                result["ok"] = False
+                result["anchor_mismatches"] = report.mismatches
+        return result
 
     def projection(self, culture: str) -> bytes:
         """The canonical projection C9 compares — excludes `ts`/`hash`, which are timing, not content."""
