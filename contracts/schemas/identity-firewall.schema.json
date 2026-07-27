@@ -1,0 +1,209 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "hypercell/contracts/identity-firewall/5.1.0",
+  "title": "identity-firewall -- trust tags, the staged identity ladder's records, trifecta booleans, redaction notes, and the export bundle",
+  "$comment": "Generated mirror of contracts/identity-firewall.md v5.1.0 (P3 resolution) -- the .md is the source of truth; regenerate on any bump (CONTRACT-HDR-1).",
+  "description": "Root = oneOf the contract's fenced record shapes: the two-axis identity record (B.2), the frame block (B.3), the tool-profile trifecta annex (B-Annex-1), and the hc export bundle (B.7). Enums live in $defs: trust_channel (the enum this contract owns -- B.3 stamping rule), trust_tag (control|data), ladder_stage, trifecta booleans (ALL THREE recomputed as folds at every ingress, s6-05; declared trifecta{} is ADVISORY, s6-03), waiver_policy, the always-privileged type set (B.9), and the redaction-note shape (B.5 markers land in wire.md 2.1's reserved redactions[] column). Reader liberality (B.0.1): unknown envelope fields, unknown trust_tag values, and unknown waiver_policy names MUST be ignored, not errored on; an absent sig means unsigned (validity is the stage ratchet's, B.6.3); an absent trust_tag MUST default to data -- fail-closed on security-relevant defaults, fail-open (ignore) on forward-compatibility ones. No smuggled 10th contract: the trust_channel enum, the trifecta annex, and the waiver-policy set version with THIS contract's semver (B.11).",
+  "oneOf": [
+    { "$ref": "#/$defs/identity_record" },
+    { "$ref": "#/$defs/frame_block" },
+    { "$ref": "#/$defs/tool_profile_trifecta_annex" },
+    { "$ref": "#/$defs/export_bundle" }
+  ],
+  "$defs": {
+    "trust_channel": {
+      "enum": ["operator", "receipted", "tool", "external"],
+      "$comment": "B.3 stamping rule -- the provenance enum this contract owns (02's percept.trust reads it): operator-console/operator-key channel -> operator (=> trust_tag control); ACL-privileged type + ACL-verified sender -> receipted; the cell's own tool result -> tool; anything else -> external. Non-suppliable, transport-ASSIGNED like seq/ts; absent => external (fail-closed). control maps to operator only; data covers {receipted, tool, external}"
+    },
+    "trust_tag": {
+      "enum": ["control", "data"],
+      "$comment": "B.3 frame-level binary: control iff the channel is the operator directive channel; data otherwise. Default (unknown/absent) = data (fail-closed, B.0.1). A data block MUST NOT be promotable to control by its own content -- assignment, not detection (L-FIREWALL)"
+    },
+    "ladder_stage": {
+      "enum": [0, "1a", "1b", 2, 3],
+      "$comment": "B.1/B.6.5 -- current_stage() is a FOLD over command{kind:stage_bump} records (no lie-able field); the ratchet law (B.6.3): once a stage's trigger fires, lower-stage validation is no longer SUFFICIENT for the types it protects (a stripped signature is refused/downgrade, never demoted to Stage-0 validity). B.2's authority.stage uses the integer coarsening 0|1|2|3. Stage 3 (federated agent identity) is REFUSED until a ratified standard clears the trigger"
+    },
+    "identity_record": {
+      "type": "object",
+      "$comment": "B.2 -- the two-axis identity record, carried in the cell's nucleus instance block; every field is a FOLD over spawn/grant/command records or an operator import -- NONE is a cell-suppliable envelope field (membrane.py:13's sender-trusting origin is repealed)",
+      "properties": {
+        "claim_id": { "type": "string", "$comment": "spiffe://<trust-domain>/<claim-path> naming shape (Stage-2, E.14) -- forward-compatible, zero SPIRE dependency" },
+        "authority": {
+          "type": "object",
+          "properties": {
+            "stage": { "enum": [0, 1, 2, 3], "$comment": "the fabric's CURRENT triggered stage (ratchet, B.6.3)" },
+            "may_direct": { "type": "boolean", "$comment": "only the operator principal is ever true" },
+            "signed_by": { "anyOf": [{ "enum": ["operator", "conductor"] }, { "type": "null" }], "$comment": "set by verify(), never by the cell" }
+          },
+          "required": ["stage", "may_direct"],
+          "additionalProperties": false
+        },
+        "capability": {
+          "type": "object",
+          "$comment": "the attenuation law (Stage 2): a child's authority is a subset of the parent's, budget carved, not minted -- Biscuit offline-attenuation semantics, zero crypto dependency; set-inclusion checked at the spawn gate (SEC-4/CELL-7)",
+          "properties": {
+            "harm_ceiling": { "enum": ["H0", "H1", "H2", "H3"], "$comment": "<= role.harm_ceiling; child subset of parent" },
+            "tools": { "type": "array", "items": { "type": "string" }, "$comment": "subset of parent.tools" },
+            "egress_allow": { "type": "array", "items": { "type": "string" }, "$comment": "subset of parent.egress_allow; empty = deny-all (v2 sec 11)" },
+            "grant_ref": { "type": ["string", "null"], "$comment": "substrate grant id; short-lived; null at H0-generic" },
+            "budget_usd": { "type": "number", "$comment": "carved from parent escrow, never minted" }
+          },
+          "additionalProperties": false
+        }
+      },
+      "required": ["claim_id", "authority", "capability"],
+      "additionalProperties": false
+    },
+    "frame_block": {
+      "type": "object",
+      "$comment": "B.3 -- the unit of context assembly (assembly algorithm frame_v1, deterministic, versioned). The trust_tag and provenance.channel are transport-ASSIGNED envelope metadata -- like seq and ts -- NEVER a body convention and NEVER sender-suppliable (the non-suppliability rule). At most one control directive per frame; data blocks are structurally fenced; the v1 as_data() string wrap is kept only as a redundant render",
+      "properties": {
+        "trust_tag": { "$ref": "#/$defs/trust_tag" },
+        "provenance": {
+          "type": "object",
+          "properties": {
+            "channel": { "enum": ["operator_command", "peer_message", "tool_result", "retrieved_page", "act_result", "own_nucleus"] },
+            "source_ref": { "type": "string", "$comment": "seq:<n> | act://corr/... | nucleus:factual/..." },
+            "trust_floor": { "type": "integer", "$comment": "02's terminal trust tag; diversity/entailment reads this; a factual register entry is auditable-to-terminal or it does not enter as factual (B.3 step 4)" }
+          },
+          "required": ["channel"],
+          "additionalProperties": false
+        },
+        "fenced": { "type": "boolean", "$comment": "data blocks are rendered inside an un-spoofable structural fence; control blocks render in a region the data fence cannot reach" },
+        "body": { "type": "string", "$comment": "text or artifact-ref" }
+      },
+      "required": ["trust_tag", "provenance", "body"],
+      "additionalProperties": false
+    },
+    "trifecta": {
+      "type": "object",
+      "$comment": "B.4 -- the lethal-trifecta gate (Meta's Rule of Two, mechanical): three booleans computed structurally, never by a classifier. All three true at spawn => REFUSE to instantiate (refused/trifecta) unless an operator waiver applies. ALL THREE booleans are FOLDS re-evaluated at every ingress (s6-05; a log query, never a monitor): the act gate's step 1h refuses (reason:trifecta) whenever the POST-INGRESS fold shows all three true (holds-all-three), regardless of which channel set the third. Declared trifecta{} is ADVISORY (s6-03): the gate RECOMPUTES from exfil_channel + egress_allow + role holdings + the folds, and REFUSES admission when declared < recomputed. The exfil rule: external_comms := egress-allowlist breadth OR cell-composed destination, NEVER method (a read-only GET can exfiltrate -- EchoLeak)",
+      "properties": {
+        "private_data": { "type": "boolean", "$comment": "FOLD (s6-05): standing_access JOIN fold(received handoff/submission/pollination from other claim_ids) JOIN (operator-memory grant present) -- role.md's standing_access (LB4) is the declared leg" },
+        "untrusted_content": { "type": "boolean", "$comment": "FOLD over the cell's exec-ok receipts (acquired on the first world-content fetch, not static). PROVENANCE-TAINT LAW (R8): output of an untrusted_content=true cell is adversarial-EQUIVALENT -- class-3 or REFUSED" },
+        "external_comms": { "type": "boolean", "$comment": "FOLD: profile JOIN fold(egress grants acquired) -- can the role send bytes to an unpinned destination (the exfil rule above)" }
+      },
+      "required": ["private_data", "untrusted_content", "external_comms"],
+      "additionalProperties": false
+    },
+    "waiver_policy": {
+      "enum": ["scoped-act", "shed-egress", "quarantine-and-gate"],
+      "$comment": "B.4 waiver precedence (operator forces external_comms -> H3 = operator-always, then picks a policy): scoped-act (default; ephemeral class-3 sandbox + one-endpoint egress + signed operator grant -- the trifecta broken by construction), shed-egress, quarantine-and-gate (every act held for operator co-sign, H3). Unknown waiver_policy names are ignored by readers (B.0.1)"
+    },
+    "tool_profile_trifecta_annex": {
+      "type": "object",
+      "$comment": "B-Annex-1 -- the tool-profile trifecta annex: format owned by seat 06 (act.md sec 10.2, where credential_carrier additionally names none), boolean semantics by seat 10 (this contract), pricing by seat 07. Change credential_carrier/exfil_channel/egress_allow and the booleans recompute -- that is the derivation rule. The declared trifecta{} here is ADVISORY (s6-03): B.4's gate recomputes and an under-declaring profile fails admission",
+      "properties": {
+        "id": { "type": "string", "$comment": "e.g. web.search@v1" },
+        "harm_floor": { "enum": ["H0", "H1", "H2", "H3"] },
+        "credential_carrier": { "enum": ["header", "query", "body"], "$comment": "drives redaction (B.5) + provenance scrub (06-T3); act.md 10.2's format-owner enum adds none" },
+        "exfil_channel": { "enum": ["none", "url", "body", "headers"], "$comment": "drives external_comms (B.4)" },
+        "egress_allow": { "type": "array", "items": { "type": "string" }, "$comment": "pinned set; breadth drives external_comms" },
+        "trifecta": { "$ref": "#/$defs/trifecta" }
+      },
+      "required": ["id", "trifecta"],
+      "additionalProperties": false
+    },
+    "redaction_note": {
+      "type": "object",
+      "$comment": "B.5 -- the redaction pass runs BEFORE canonicalization and append (the chain never witnesses a secret; verify() never needs a secret); each hit replaced with a marker; the redactor writes its markers into the wire redactions[] envelope column, which IS inside the canonical leaf (wire.md 2.1 shape mirrored here: {field, kind, n}) -- redactor-assigned, non-suppliable, lands as a wire MINOR with secrets.py. Nucleus-side, the ledger envelope's red column carries [{path, rule}] (nucleus.md sec 2)",
+      "properties": {
+        "field": { "type": "string" },
+        "kind": { "type": "string", "$comment": "secret class, e.g. api-key (pattern set: exact-match substrate secret values, Bearer/sk-/AKIA/JWT/query-credential shapes -- B.5 steps 1-2)" },
+        "n": { "type": "integer" }
+      },
+      "additionalProperties": false
+    },
+    "redactions": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/redaction_note" },
+      "$comment": "the reserved wire envelope column the markers land in (B.5 step 3; wire.md 2.1)"
+    },
+    "privileged_types": {
+      "enum": ["command", "receipt", "verdict", "oracle_gen", "compact", "cmd_receipt"],
+      "$comment": "B.9 -- the firewall's ALWAYS-privileged set (conductor-only mint, Stage-1b-signed on trigger); plus round_open conditionally privileged (self-clocked only where the run manifest declares it, and then never gen-bump-bearing, R14) and act_receipt mint-restricted to EXECUTOR principals (never the acting cell -- A5: no act reports itself); oracle_gap is NEVER privileged (R14). The wire sec 3 table is the ONE privilege source of truth; the Stage-1b signature-requirement column IS its ACL column. The honest registry count is 17 -- arithmetic follows the ACL, not the reverse"
+    },
+    "export_bundle": {
+      "type": "object",
+      "$comment": "B.7 -- hc export <scope> --sign: a signed, tamper-evident, identity-tagged, time-ordered event record (Article-12-grade shape; applicability NOT claimed, E.16). verify() needs no secret: redaction precedes canonicalization, so an auditor re-verifies the Merkle root and every chain link over redacted bytes with only the public key. SEC-EXPORT: a bundle with redaction_manifest.secret_count > 0 refuses to export; one flipped byte fails verify at the exact leaf",
+      "properties": {
+        "version": { "type": "string", "$comment": "5.0.0" },
+        "scope": {
+          "type": "object",
+          "properties": {
+            "culture": { "type": "string" },
+            "run_id": { "type": "string" },
+            "claim_id": { "type": "string" },
+            "from_seq": { "type": "integer" },
+            "to_seq": { "type": "integer" }
+          },
+          "additionalProperties": false
+        },
+        "merkle_root": { "type": "string", "$comment": "RFC-6962 root over the per-cell hash chains in scope (03's spans law)" },
+        "chains": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "claim_id": { "type": "string" },
+              "from_hash": { "type": "string" },
+              "to_hash": { "type": "string" },
+              "leaf_count": { "type": "integer" }
+            },
+            "additionalProperties": false
+          }
+        },
+        "pre_adoption_baselines": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "claim_id": { "type": "string" },
+              "chain_adopted_at_seq": { "type": "integer" },
+              "pre_adoption_root": { "type": "string" }
+            },
+            "additionalProperties": false
+          },
+          "$comment": "R13/s6-12 (MUST): the operator-signed Merkle baseline over each unhashed pre-adoption region, verbatim from that chain's synthetic genesis (nucleus.md sec 14); verify re-derives the region root from exported bytes and fails on mismatch -- the R13 legacy trust-tag read is admissible ONLY against a verifying baseline"
+        },
+        "identity_tags": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "claim_id": { "type": "string" },
+              "spiffe_uri": { "type": "string" },
+              "first_seq": { "type": "integer" }
+            },
+            "additionalProperties": false
+          }
+        },
+        "oracle_gens": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "oracle_id": { "type": "string" },
+              "gen": { "type": ["integer", "string"] },
+              "sealed_commitment_ref": { "type": "string" }
+            },
+            "additionalProperties": false
+          },
+          "$comment": "05's sealed/errata sigs"
+        },
+        "redaction_manifest": {
+          "type": "object",
+          "properties": {
+            "secret_count": { "type": "integer", "$comment": "SEC-EXPORT asserts 0" },
+            "scanned_bytes": { "type": "integer" }
+          },
+          "additionalProperties": false
+        },
+        "signed_by": { "enum": ["operator", "conductor"] },
+        "sig": { "type": "string", "$comment": "ed25519 over merkle_root | scope | version" }
+      },
+      "required": ["version", "scope", "merkle_root"],
+      "additionalProperties": false
+    }
+  }
+}

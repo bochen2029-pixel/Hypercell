@@ -4,6 +4,7 @@
   hc resume --claim ID [--provider mock]
   hc fleet [ls]
   hc provider set NAME
+  hc preflight [--json]
 """
 from __future__ import annotations
 
@@ -46,6 +47,45 @@ def ask(
     r = r.model_copy(update={"provider": ProviderConfig(provider=provider, model=model or default_model)})
     cell = build_cell(_home(), claim, r)
     typer.echo(asyncio.run(cell.ask(prompt, idem=idem)))
+
+
+@app.command()
+def verify(
+    claim: str = typer.Option(..., "--claim", help="the claim-id whose nucleus chain to verify"),
+) -> None:
+    """Re-derive a nucleus hash chain (NUC-1). On tamper, names the FIRST bad seq — the tamper point."""
+    from ..cell.nucleus import Nucleus
+
+    n = Nucleus(_home(), claim)
+    try:
+        report = n.verify()
+        if report.ok:
+            typer.echo(f"chain OK  {claim}  ({report.checked} records)  head={n.head_hash[:23]}...")
+            raise typer.Exit(0)
+        where = f" at seq {report.first_bad_seq}" if report.first_bad_seq is not None else ""
+        typer.echo(f"chain BROKEN  {claim}{where}\n  {report.reason}")
+        raise typer.Exit(1)
+    finally:
+        n.close()
+
+
+@app.command()
+def preflight(
+    as_json: bool = typer.Option(False, "--json", help="emit the status{kind:preflight} body instead of text"),
+) -> None:
+    """Probe the box before trusting it with gold (ARCHITECTURE §11; falsifier PREFLIGHT-LITE-1).
+
+    Exit code is the verdict, so CI and the day-1 golden path can gate on it:
+    0 = GREEN, 1 = DEGRADED (runs proceed, labelled), 2 = RED (a spine guard failed; the fabric halts).
+    """
+    import json as _json
+
+    from ..substrate.k3s import run_preflight
+    from ..substrate.preflight import render
+
+    report = run_preflight(_home())
+    typer.echo(_json.dumps(report.as_status_body(), indent=2) if as_json else render(report))
+    raise typer.Exit({"GREEN": 0, "DEGRADED": 1, "RED": 2}[report.verdict])
 
 
 @app.command()
@@ -150,13 +190,21 @@ def run(
 
 @app.command()
 def apply(file: str = typer.Option(..., "-f", "--file", help="a run manifest yaml")) -> None:
-    import yaml
 
     from ..common.types import RunManifest
     from ..conductor.engine.topology import run_tournament
+    from ..conductor.manifest import ManifestConflict, apply_file
 
-    data = yaml.safe_load(Path(file).read_text(encoding="utf-8"))
-    m = RunManifest.model_validate(data)
+    # RE-2: freeze the bytes. Every later open reads the frozen copy, so editing the yaml
+    # mid-run cannot silently change the rules a run has already been playing by.
+    try:
+        frozen = apply_file(_home(), file)
+    except ManifestConflict as conflict:
+        typer.echo(f"refused: {conflict}")
+        raise typer.Exit(2) from None
+
+    m = RunManifest.model_validate(frozen.data)
+    typer.echo(f"manifest frozen {frozen.sha256[:23]}...")
     provider, model, base_prompt = "deepseek", "deepseek-chat", None
     if m.roster:
         rr = load_role(m.roster[0].role)

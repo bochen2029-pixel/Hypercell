@@ -1,0 +1,393 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "hypercell/contracts/wire/5.1.0",
+  "title": "wire -- the Medium envelope (16 columns) and the 17-type payload registry",
+  "$comment": "Generated mirror of contracts/wire.md v5.1.0 (P3 resolution) -- the .md is the source of truth; regenerate on any bump (CONTRACT-HDR-1).",
+  "description": "Root = one Medium message envelope (wire.md sec 2; emit shape -- anything beyond this column set is a wire MAJOR). The 17 registry payload bodies are modeled in $defs (wire.md sec 3/3.1). Emit-strict / read-liberal (template H4, R1-R6): emitters mint only registry types and schema fields (x-* excepted); readers MUST ignore unknown types and MUST preserve unknown fields byte-faithfully. seq/ts/hash are Medium-assigned (L-CLOCK); trust derives only from Medium-assigned fields (L-ASSIGNED-BY-IS-TRUST-INPUT).",
+  "type": "object",
+  "properties": {
+    "seq": { "type": "integer", "$comment": "Medium-assigned; per-culture total order, dense at post; gaps only via compact (sec 2 #1, L-ORDER)" },
+    "ts": { "type": "string", "$comment": "Medium-assigned; UTC ISO-8601 ms; informative -- seq is normative (sec 2 #2, L-CLOCK)" },
+    "culture": { "type": "string", "$comment": "the room / run id; commons, _ops, and _fleet are reserved (sec 2 #3, 6.3, 6.4, R22)" },
+    "sender": { "type": "string", "$comment": "claim-id, or operator / conductor / bridge:<peer> / a registered surface principal -- a declared principal binding, authenticated by the identity ladder (sec 2 #4, 16.1)" },
+    "recipient": { "type": ["string", "null"], "$comment": "null = whole culture; claim-id = directed (still visible); operator = human inbox (sec 2 #5)" },
+    "type": {
+      "anyOf": [
+        { "enum": ["presence", "chat", "status", "task", "claim", "submission", "receipt", "round_open", "verdict", "handoff", "command", "act", "act_receipt", "oracle_gen", "compact", "oracle_gap", "cmd_receipt"] },
+        { "type": "string", "pattern": "^x-" }
+      ],
+      "$comment": "the 17-type registry (sec 3) or x-* experiments; R1/R3: readers ignore unknown types, never error, preserve when relaying"
+    },
+    "reply_to": { "type": ["integer", "null"], "$comment": "the seq answered (threading) (sec 2 #7)" },
+    "round": { "type": ["integer", "null"], "$comment": "round (tournament) / stage (pipeline) (sec 2 #8)" },
+    "priority": { "type": "integer", "default": 0, "$comment": "0 normal; higher = surface first; never reorders delivery (L-ORDER)" },
+    "origin": { "type": ["string", "null"], "$comment": "command: the authority acted for; bridged messages: external. A declaration, never a trust input (sec 2 #10, L-ASSIGNED-BY-IS-TRUST-INPUT)" },
+    "idem": { "type": ["string", "null"], "$comment": "idempotency key; (culture, sender, idem) unique -- the exactly-once post key (sec 7.1)" },
+    "corr": { "type": ["string", "null"], "$comment": "ULID of the logical operation (run, act, command); survives bridging and re-sequencing (sec 2 #12)" },
+    "mentions": { "type": ["array", "null"], "items": { "type": "string" }, "$comment": "array of claim-ids; the wake-on-mention filter (sec 2 #13)" },
+    "body": { "$comment": "payload (any JSON or string); soft cap 4 KB (warn), hard cap 32 KB (refuse -> artifact). Per-type body shapes live in $defs (sec 3.1)" },
+    "artifact": { "anyOf": [{ "$ref": "#/$defs/artifact" }, { "type": "null" }], "$comment": "pointer block (sec 4); REQUIRED when the payload exceeds the body cap" },
+    "hash": { "type": ["string", "null"], "$comment": "Medium-assigned; per-culture chain head at this seq (sec 5); T0: at post; T1: at seal (null until sealed)" },
+    "sig": { "type": ["string", "null"], "$comment": "RESERVED column (sec 2.1) -- absent in 5.x rows until a MINOR lands them. ed25519 signature (hex) by the sender principal's registered key over leaf_n; excluded from the leaf like hash; lands later as a MINOR with identity-firewall.md Stage 1b" },
+    "redactions": { "type": ["array", "null"], "items": { "$ref": "#/$defs/redaction_note" }, "$comment": "RESERVED column (sec 2.1) -- absent in 5.x rows until a MINOR lands them. Written by the redactor (L-REDACT-BEFORE-CANON); INSIDE the leaf (record content); lands with seat 10's redactor" }
+  },
+  "required": ["seq", "ts", "culture", "sender", "type"],
+  "additionalProperties": false,
+  "$defs": {
+    "artifact": {
+      "type": "object",
+      "$comment": "the artifact pointer (wire.md sec 4); sha256 REQUIRED (a pointer to an editable path is not provenance, law 1); bytes/lines MUST be present so receivers can budget before opening (law 3)",
+      "properties": {
+        "path": { "type": "string", "$comment": "culture-sandbox-relative; NEVER absolute (bridge/portability)" },
+        "bytes": { "type": "integer" },
+        "lines": { "type": "integer" },
+        "mime": { "type": "string" },
+        "sha256": { "type": "string", "$comment": "computed at post time by the sender's bus client; mismatch is fraud-class evidence (L-NO-NAKED-CLAIMS)" },
+        "store": { "enum": ["sandbox", "archive", "objstore", "quarantine"] },
+        "manifest": { "type": ["object", "null"], "$comment": "chunker manifest for pre-chunked artifacts" }
+      },
+      "required": ["path", "bytes", "lines", "sha256"],
+      "additionalProperties": false
+    },
+    "redaction_note": {
+      "type": "object",
+      "$comment": "reserved redactions[] item shape (wire.md sec 2.1)",
+      "properties": {
+        "field": { "type": "string" },
+        "kind": { "type": "string" },
+        "n": { "type": "integer" }
+      },
+      "additionalProperties": false
+    },
+    "census": {
+      "type": "object",
+      "$comment": "the 9-tuple of contract versions -- all nine, always (s2-34; template H2/H5); carried by culture genesis, nucleus genesis, image labels, detached artifacts, and the CommandEnvelope contracts{} expectation block",
+      "properties": {
+        "wire": { "type": "string" },
+        "nucleus": { "type": "string" },
+        "role": { "type": "string" },
+        "run": { "type": "string" },
+        "oracle": { "type": "string" },
+        "act": { "type": "string" },
+        "pricebook": { "type": "string" },
+        "command": { "type": "string" },
+        "identity-firewall": { "type": "string" }
+      },
+      "required": ["wire", "nucleus", "role", "run", "oracle", "act", "pricebook", "command", "identity-firewall"],
+      "additionalProperties": false
+    },
+    "presence": {
+      "type": "object",
+      "$comment": "wire.md sec 3.1 -- lifecycle; phase=genesis is the FIRST record of every culture (chain anchor; conductor/operator-only, D-gold R-forever). R3 fallback: unknown phase reads as announce-class chatter. A presence-phase addition is a wire MINOR with a named fallback",
+      "properties": {
+        "phase": { "enum": ["genesis", "announce", "spawned", "parked", "resumed", "depart"] },
+        "contracts": { "$ref": "#/$defs/census", "$comment": "genesis only: the version census" },
+        "chain": {
+          "type": "object",
+          "properties": { "construction": { "type": "string" } },
+          "required": ["construction"],
+          "additionalProperties": false,
+          "$comment": "sec 5.2 anchor id, e.g. hypercell/medium-chain/1 -- chain-versioned, not wire-versioned"
+        },
+        "run_ref": { "type": ["string", "null"], "$comment": "corr of the command that opened this culture; null for commons/_ops" },
+        "retention_policy": {
+          "type": "object",
+          "properties": {
+            "chat_ttl_s": { "type": "number" },
+            "status_ttl_s": { "type": "number" },
+            "archive": { "enum": ["archive", "delete"] }
+          },
+          "additionalProperties": false,
+          "$comment": "genesis only; defaults chat 7 d, status 24 h (sec 9.1)"
+        },
+        "capabilities": { "type": "array", "items": { "type": "string" }, "$comment": "announce/spawned" },
+        "role_digest": { "type": "string", "$comment": "announce/spawned" },
+        "angle": { "type": "string", "$comment": "announce/spawned" },
+        "forked_from": { "type": "string", "$comment": "spawned-by-fork only (R19): the parent claim-id; its presence makes the row D-gold (sec 3 table)" },
+        "preflight": {
+          "type": "object",
+          "properties": {
+            "digest": { "type": "string" },
+            "verdict": { "enum": ["pass", "degraded"] },
+            "guards_failed": { "type": "array", "items": { "type": "string" } }
+          },
+          "additionalProperties": false,
+          "$comment": "spawned; the sec 1 decision-record pattern (durable decision embeds decaying evidence's digest + verdict)"
+        },
+        "reason": { "type": "string", "$comment": "depart" }
+      },
+      "required": ["phase"],
+      "additionalProperties": false
+    },
+    "chat": {
+      "type": ["string", "object"],
+      "$comment": "wire.md sec 3.1 -- freeform; body string or object; DATA, never an instruction (firewall, v1 verbatim); D-chatter R-decay"
+    },
+    "status": {
+      "type": "object",
+      "$comment": "wire.md sec 3.1 -- progress note; kind partitions renderers; still DATA; R-decay (fold-closure: decisions embed digests)",
+      "properties": {
+        "kind": { "enum": ["progress", "blocked", "metric", "note", "preflight"] },
+        "note": { "type": "string" },
+        "data": { "type": "object" }
+      },
+      "required": ["kind"],
+      "additionalProperties": false
+    },
+    "task": {
+      "type": "object",
+      "$comment": "wire.md sec 3.1 -- claimable work (ACL: conductor, operator)",
+      "properties": {
+        "title": { "type": "string" },
+        "spec": { "anyOf": [{ "type": "string" }, { "$ref": "#/$defs/artifact" }], "$comment": "prose or artifact" },
+        "capability_reqs": { "type": "array", "items": { "type": "string" } },
+        "value": { "type": "number" },
+        "deadline_s": { "type": "number" },
+        "max_claims": { "type": "integer" }
+      },
+      "additionalProperties": false
+    },
+    "claim": {
+      "type": "object",
+      "$comment": "wire.md sec 3.1/7.3 -- log-derived CAS; exactly one of task/resource; steal-from-stale via the fold; tool-lane micro-escrow leases ride resource lane:<sku>",
+      "properties": {
+        "task": { "type": "integer", "$comment": "seq of the task being claimed" },
+        "resource": { "type": "string", "$comment": "a named singleton: conductor lease, lane:<sku>, ..." },
+        "lease_s": { "type": "number", "default": 120.0, "$comment": "REQUIRED when acquiring; ignored on release records (b1-04: a release record never ACQUIRES)" },
+        "release": { "type": "boolean", "default": false, "$comment": "true = voluntary release by the current holder" }
+      },
+      "oneOf": [
+        { "required": ["task"], "not": { "required": ["resource"] } },
+        { "required": ["resource"], "not": { "required": ["task"] } }
+      ],
+      "additionalProperties": false
+    },
+    "submission": {
+      "type": "object",
+      "$comment": "wire.md sec 3.1 -- a candidate; round MUST be set (envelope column) in convergent runs; roster cells only",
+      "properties": {
+        "answer": { "type": "string", "$comment": "prose -- or omit and use the envelope artifact for code/large" },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "kind": { "enum": ["act", "medium", "nucleus", "url", "file"], "$comment": "act seat owns kinds; url is canonical (R30 -- act.md 5.1 aligned from web); act.md adds quote/role" },
+              "ref": { "type": "string", "$comment": "ONE URI locator, e.g. act://<corr>" },
+              "sha256": { "type": "string" },
+              "retrieved_at": { "type": "string" }
+            },
+            "additionalProperties": true,
+            "$comment": "entry shape owned by act.md sec 5.1 (adds quote, role); wire names the minimal binding"
+          }
+        },
+        "ungrounded": { "type": "boolean", "default": false, "$comment": "honest flag; survivable per L-NO-NAKED-CLAIMS" },
+        "self_report": {
+          "type": "object",
+          "properties": {
+            "tokens": {
+              "type": "object",
+              "properties": { "in": { "type": "integer" }, "out": { "type": "integer" } },
+              "additionalProperties": false
+            },
+            "wall_ms": { "type": "number" }
+          },
+          "additionalProperties": false,
+          "$comment": "self-declared measurement, never spelled cost{}: submissions are outside the crossing set (W1); the canonical cost{} six (R16) rides only crossing records (receipt/act_receipt/cmd_receipt/verdict)"
+        }
+      },
+      "additionalProperties": false
+    },
+    "receipt": {
+      "type": "object",
+      "$comment": "wire.md sec 3.1 -- the oracle's grading (conductor-only, D-gold R-forever, non-mintable). Body IS the trust seat's StackReceipt verbatim and MAY carry more fields than named here (see oracle.schema.json StackReceipt) -- hence additionalProperties true. R3 fallback: unknown outcome reads invalid (excluded -- never zero, never gate)",
+      "properties": {
+        "subject": {
+          "oneOf": [
+            { "type": "object", "properties": { "submission": { "type": "integer" } }, "required": ["submission"], "additionalProperties": false },
+            { "type": "object", "properties": { "act": { "type": "string" } }, "required": ["act"], "additionalProperties": false },
+            { "type": "object", "properties": { "run": { "type": "string" } }, "required": ["run"], "additionalProperties": false }
+          ],
+          "$comment": "receipt{subject:{act}} = the oracle grading an act (quality); act_receipt = the executor's phase record (reality); {run}: intake classification (run.md R6.3)"
+        },
+        "oracle_id": { "type": "string" },
+        "oracle_gen": { "type": "string", "$comment": "REQUIRED; absent reads g0, forever (the reinterpretation clause, template H3)" },
+        "outcome": { "enum": ["passed", "gate", "invalid"], "$comment": "exit tri-state, v1-verbatim (Outcome.passed, topology.py:184)" },
+        "score": { "type": "number" },
+        "check": { "enum": ["unit", "grounding", "panel", "probe", "intake"] },
+        "per_case": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": { "id": { "type": "string" }, "pass": { "type": "boolean" }, "detail_ref": { "type": "string" } },
+            "additionalProperties": true
+          }
+        },
+        "report_ref": { "$comment": "report-file protocol (trust seat); conductor-access-only artifact" },
+        "families": { "type": "array", "items": { "type": "string" } },
+        "dissent": { "type": "number" },
+        "contested": { "type": "boolean" },
+        "cost": { "type": "object", "$comment": "canonical crossing-record cost{} field-group -- member semantics owned by pricebook.md 5.2 (R16: six members; wall_ms is NOT a member)" }
+      },
+      "required": ["subject", "oracle_gen"],
+      "additionalProperties": true
+    },
+    "round_open": {
+      "type": "object",
+      "$comment": "wire.md sec 3.1 -- opens round N; round 1 carries the goal; ACL conductor (or self-clocked per run manifest, never carrying a gen bump)",
+      "properties": {
+        "goal": { "type": "string", "$comment": "r1 only" },
+        "roster": { "type": "array", "items": { "type": "string" }, "$comment": "claim-ids" },
+        "deadline_s": { "type": "number" },
+        "oracle_gen": { "type": "string", "$comment": "a gen bump opens a round; NEVER on self-clocked round_open" },
+        "regrade": { "type": "boolean", "default": false }
+      },
+      "additionalProperties": false
+    },
+    "verdict": {
+      "type": "object",
+      "$comment": "wire.md sec 3.1 -- closes a run (conductor-only, D-gold R-forever). kind is the honesty split (L-HONEST-VERDICT). Wire owns the kind enum (HOME, R21); oracle.md 5.2's block is certificate-side (oracle_gen, vs_null detail, residual object form, regrades, invalid_rate riding this body) -- hence additionalProperties true",
+      "properties": {
+        "kind": { "enum": ["verified", "verified-with-residual", "synthesis"], "$comment": "HOME enum (R21): the wire verdict discriminator; oracle.md 5.2's block is certificate-side" },
+        "champion": {
+          "type": "object",
+          "properties": { "submission": { "type": "integer" }, "arm": { "type": "string" }, "score": { "type": "number" } },
+          "additionalProperties": true,
+          "$comment": "verified / verified-with-residual"
+        },
+        "vs_null": {
+          "type": "object",
+          "properties": {
+            "null_score": { "type": "number" },
+            "null_usd": { "type": "number" },
+            "margin_production": { "type": "number" },
+            "margin_invoice": { "type": "number" }
+          },
+          "additionalProperties": true,
+          "$comment": "REQUIRED on verified (L-NULL); the canonical four members {null_score, null_usd, margin_production, margin_invoice} -- DUAL-UNIT per v2 sec 4, restored; no lift_* names, null_usd is a single field; field detail owned by run.md (seat 04)"
+        },
+        "residual": { "type": ["array", "object"], "$comment": "wire 3.1 shows a string list (unprobed, listed on purpose); oracle.md 5.2's addition uses the object form" },
+        "why": { "type": "string" },
+        "certificate_ref": { "$comment": "artifact pointer to the run.md R8.1 certificate" },
+        "text_ref": { "$comment": "synthesis payload (absorbs live synthesis type)" }
+      },
+      "required": ["kind"],
+      "additionalProperties": true
+    },
+    "handoff": {
+      "type": "object",
+      "$comment": "wire.md sec 3.1 -- continuity package (Intercom sec 13 semantics kept); posted by a dying cell; D-gold R-run",
+      "properties": {
+        "successor": { "type": ["string", "null"] },
+        "state_ref": { "$comment": "artifact pointer" },
+        "open_threads": { "type": "array", "items": { "type": "string" } },
+        "next_action": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "command": {
+      "type": "object",
+      "$comment": "wire.md sec 3.1 -- the ONLY instruction-bearing type (ACL: operator / conductor / registered surface principals; D-gold R-forever). Body is the CommandEnvelope BY REFERENCE (contracts/command.md sec 1 owns fields; wire never duplicates) -- hence additionalProperties true; wire-level binding fields named below",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "$comment": "see contracts/command.md sec 2 -- the one kind registry (delegated, never copied here; canon #3). Includes the fleet-decision kinds flip|grant|revoke|park|resume (R22) and the operator-statute kinds (s6-10); kind-addition = a command.md MINOR, zero wire-registry impact (ruling #692). Validate against command.schema.json"
+        },
+        "cmd_id": { "type": "string", "$comment": "dedup key (F7); MUST equal envelope corr for directives" },
+        "grant_for": { "type": "string", "$comment": "kind=grant only: the act corr" },
+        "census": { "$ref": "#/$defs/census", "$comment": "kind=contract_bump: the new version census" }
+      },
+      "additionalProperties": true
+    },
+    "cmd_receipt": {
+      "type": "object",
+      "$comment": "wire.md sec 3.1 -- the command plane's receipt (conductor-only; body fields owned by contracts/command.md sec 3 -- hence additionalProperties true). Wire-level bindings: envelope corr = the command's cmd_id (REQUIRED); each phase a SEPARATE envelope over that corr (fold, never mutation); ack/result D-gold R-forever (every command -- including a REFUSED one -- gets a result); progress D-chatter R-decay (operator-facing streaming rides it)",
+      "properties": {
+        "phase": { "enum": ["ack", "progress", "result"] },
+        "outcome": { "type": "string", "$comment": "phase=result; refusals are receipts too. See contracts/command.md sec 3 -- the one outcome enum {ok, failed, refused, superseded, expired} (delegated, canon #4; partial is deleted -- no producer); command.md owns body fields" },
+        "note": { "type": "string" },
+        "result_ref": { "$comment": "artifact pointer" },
+        "cost": { "type": "object", "$comment": "canonical cost{} field-group -- pricebook.md 5.2 (R16)" }
+      },
+      "required": ["phase"],
+      "additionalProperties": true
+    },
+    "act": {
+      "type": "object",
+      "additionalProperties": true,
+      "$comment": "field schema owned by contracts/act.md sec 2 (schema-by-reference -- see act.schema.json). Wire-level bindings (wire.md 3.1): envelope corr REQUIRED (= act_id; pairs act -> grant -> receipts); envelope idem REQUIRED at H1+. Durability/retention: H1+ D-gold R-forever; H0 D-chatter R-run, cite-pinned by retained verdict evidence closures (sec 3 note 3)"
+    },
+    "act_receipt": {
+      "type": "object",
+      "properties": {
+        "phase": { "enum": ["hold", "exec", "settle"] }
+      },
+      "additionalProperties": true,
+      "$comment": "field schema owned by contracts/act.md sec 3 (schema-by-reference -- see act.schema.json). Wire-level bindings: non-mintable by the actor (conductor/executor only); each phase a SEPARATE envelope sharing the act's corr; phase=hold IS the H2 visible countdown message (one record, two duties)"
+    },
+    "oracle_gen": {
+      "type": "object",
+      "$comment": "wire.md sec 3.1 -- a trust-plane growth event (conductor-only, D-gold R-forever). The trust seat owns the kind registry (kind-addition is MINOR); bodies vary per kind (e.g. oracle.md 13.1's operator_audit carries case_ref/operator_label/second_authority/second_label/agree/class/ts) -- hence additionalProperties true. Unknown kinds are preserved, never dropped (oracle.md reader liberality)",
+      "properties": {
+        "kind": {
+          "enum": ["gen_open", "sealed_report", "spec_bug", "judge_ejected", "crucible_halt", "diversity_alarm", "errata", "operator_audit"],
+          "$comment": "the one kind registry is oracle.md-owned (canon #13; wire.md 3.1 delegates); mirrored here from oracle.md's registry table -- kind-addition is an oracle.md MINOR"
+        },
+        "oracle_id": { "type": "string" },
+        "gen": { "type": "string" },
+        "digest": { "type": "string" },
+        "case_count": { "type": "integer" },
+        "lineage": {
+          "type": "object",
+          "properties": { "prev_gen": { "type": "string" }, "prev_digest": { "type": "string" } },
+          "additionalProperties": false
+        },
+        "opened_by": { "type": "string", "$comment": "corr" },
+        "errata_ref": { "type": ["string", "object", "null"] }
+      },
+      "required": ["kind"],
+      "additionalProperties": true
+    },
+    "oracle_gap": {
+      "type": "object",
+      "$comment": "wire.md sec 3.1 -- receipt-contradicting evidence; DATA-class hint to the probe scheduler; NEVER an admission path; postable by any cell (identity-firewall B.9 R14: never privileged)",
+      "properties": {
+        "receipt": { "type": "integer", "$comment": "seq of the contradicted receipt" },
+        "claim": { "type": "string" },
+        "evidence": { "type": "array", "items": { "type": "object", "additionalProperties": true }, "$comment": "evidence refs (act.md 5.1 entry shape)" },
+        "severity": { "enum": ["low", "material"] }
+      },
+      "additionalProperties": false
+    },
+    "compact": {
+      "type": "object",
+      "$comment": "wire.md sec 3.1/9 -- a retention event (conductor-only, D-gold R-forever); one record may carry several contiguous runs; anchor-before-effect",
+      "properties": {
+        "kind": { "enum": ["drop", "archive"] },
+        "runs": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "from_seq": { "type": "integer" },
+              "to_seq": { "type": "integer" },
+              "count": { "type": "integer" },
+              "merkle_root": { "type": "string" },
+              "algo": { "type": "string", "$comment": "rfc6962-sha256 (sec 9.2 step 3)" },
+              "chain": {
+                "type": "object",
+                "properties": { "prev": { "type": "string" }, "post": { "type": "string" } },
+                "additionalProperties": false
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "by_type": { "type": "object", "additionalProperties": { "type": "integer" } },
+        "archive_ref": { "$comment": "kind=archive only: artifact pointer to the archived JSONL" }
+      },
+      "required": ["kind", "runs"],
+      "additionalProperties": false
+    }
+  }
+}

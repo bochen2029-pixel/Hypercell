@@ -58,7 +58,8 @@ async def run_fanout(
         temp = round(0.4 + 0.12 * (i % 6), 2)
         cid = f"cell{i}"
         # post the cell's arrival BEFORE it thinks, so the viewer shows the fleet appear at once.
-        med.post(culture, cid, "spawned", body={"angle": _ANGLES[i % len(_ANGLES)]}, round=1)
+        # `presence`, not an invented "spawned": a type outside the registry is E1 regrowing.
+        med.post(culture, cid, "presence", body={"phase": "arrive", "angle": _ANGLES[i % len(_ANGLES)]}, round=1)
         emit("spawned", cell=cid)
         role = Role(
             name=f"explorer{i}",
@@ -97,7 +98,8 @@ async def run_fanout(
             synthesis = await scell.ask(f"GOAL:\n{goal}\n\nSWARM ANSWERS:\n{joined}")
         except Exception as e:
             synthesis = f"(synthesis failed: {e})"
-        med.post(culture, "coordinator", "synthesis", body={"text": synthesis}, round=2)
+        # A synthesis IS a verdict kind (wire.md §3.1), and a verdict is conductor-only.
+    med.post(culture, "conductor", "verdict", body={"kind": "synthesis", "text": synthesis}, round=2)
 
     med.close()
     return {"run_id": run_id, "culture": culture, "answers": answers, "synthesis": synthesis}

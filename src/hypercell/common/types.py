@@ -9,7 +9,7 @@ from __future__ import annotations
 from enum import StrEnum
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
 
 class Depth(StrEnum):
@@ -73,7 +73,10 @@ class _Frozen(BaseModel):
 class ProviderConfig(_Frozen):
     """The swappable cognition seam config (contracts/role.md). Provider is config, not code."""
 
-    provider: str = "deepseek"
+    # `weights_family` is the v5 spelling (role.md §3's d0 manifest example); `provider` is the v1
+    # one. The attribute stays `.provider` so the pricebook, the metered path and drive do not move
+    # — the rename is accepted at the door and canonicalised, which is what a migration shim IS.
+    provider: str = Field(default="deepseek", validation_alias=AliasChoices("provider", "weights_family"))
     model: str = "deepseek-chat"
     base_url: str | None = None  # None -> registry default
     key_ref: str | None = None  # env var / secret holding the key; None -> "<PROVIDER>_API_KEY"
@@ -88,6 +91,34 @@ class Artifact(_Frozen):
     manifest: str | None = None
 
 
+#: Depth-default frame ratios (role.md §3, the one table the runtime branches on). d0 bypasses the
+#: assembler (`prompt + percept`), so it has no row. Field order: identity, tools, digest, working,
+#: retrieved, recap, percept, slack.
+_RATIO_DEFAULTS: dict[Depth, dict[str, float]] = {
+    Depth.d1: {"identity": .10, "tools": .08, "digest": 0.0, "working": .12,
+               "retrieved": 0.0, "recap": .25, "percept": .35, "slack": .10},
+    Depth.d2: {"identity": .08, "tools": .08, "digest": .12, "working": .10,
+               "retrieved": .14, "recap": .18, "percept": .22, "slack": .08},
+    Depth.d3: {"identity": .08, "tools": .06, "digest": .18, "working": .10,
+               "retrieved": .18, "recap": .12, "percept": .20, "slack": .08},
+}
+_RECAP_K_DEFAULTS: dict[Depth, int] = {Depth.d1: 8, Depth.d2: 12, Depth.d3: 12}
+#: SALIENCE_v1 weights (nucleus.md §7.3). Same at every depth; a weight change bumps salience/1.x.
+_SALIENCE_V1 = {"w_pin": 4.0, "w_factual": 2.0, "w_task": 1.5, "w_recency": 1.0, "w_ref": 0.5, "half_life": 512.0}
+
+
+class FrameCfg(_Frozen):
+    """The frame assembler's knobs (role.md §3). `None` means 'take the depth default' — the whole
+    A1 mechanism: depth is a defaults preset over ONE field space, so a role sets a ratio only to
+    OVERRIDE it, and the runtime resolves the rest from the depth table, never by branching on depth.
+    """
+
+    ratios: dict[str, float] | None = None
+    salience: dict[str, float] = Field(default_factory=lambda: dict(_SALIENCE_V1))
+    recap_k: int | None = None
+    self_tune: dict[str, Any] = Field(default_factory=lambda: {"enabled": False, "bounds_pct": 50})
+
+
 class Role(_Frozen):
     """A cell role manifest (contracts/role.md). One runtime, differentiated by this."""
 
@@ -98,8 +129,29 @@ class Role(_Frozen):
     capabilities: list[str] = Field(default_factory=list)
     tools: list[str] = Field(default_factory=list)
     memory_policy: str = "scratch"  # "scratch" | "reel"
+    frame: FrameCfg = Field(default_factory=FrameCfg)
     oracle_ref: str | None = None
     harm_ceiling: HarmClass = HarmClass.H1
+
+    def frame_ratios(self) -> dict[str, float]:
+        """The resolved ratio vector for this role: its override, else the depth default (§3).
+
+        d0 has no assembler and no row; asking for its ratios is a caller bug, so it raises rather
+        than inventing a vector — a d0 that reached the assembler took a wrong turn upstream.
+        """
+        if self.frame.ratios is not None:
+            return self.frame.ratios
+        if self.depth == Depth.d0:
+            raise ValueError("d0 bypasses the assembler (prompt + percept); it has no frame ratios")
+        return dict(_RATIO_DEFAULTS[self.depth])
+
+    def frame_salience(self) -> dict[str, float]:
+        return dict(self.frame.salience)
+
+    def recap_k(self) -> int:
+        if self.frame.recap_k is not None:
+            return self.frame.recap_k
+        return _RECAP_K_DEFAULTS.get(self.depth, 8)
 
 
 class Message(_Frozen):

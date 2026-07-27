@@ -5,7 +5,8 @@ from typing import Any
 import pytest
 
 from hypercell.cognition.base import Cognition, CompletionResult, Messages
-from hypercell.conductor.governor import BudgetExceeded, Governor, MeteredCognition
+from hypercell.cognition.metered import MeteredCognition
+from hypercell.conductor.governor import BudgetExceeded, Governor
 
 
 class BigCostStub(Cognition):
@@ -16,7 +17,7 @@ class BigCostStub(Cognition):
     async def complete(self, messages: Messages, **params: Any) -> CompletionResult:
         self.calls += 1
         return CompletionResult(
-            text="x", model="deepseek", prompt_tokens=1_000_000, completion_tokens=1_000_000
+            text="x", model="deepseek-chat", prompt_tokens=1_000_000, completion_tokens=1_000_000
         )
 
 
@@ -34,10 +35,12 @@ async def test_budget_hard_stop() -> None:
 
 
 def test_price_zero_for_free_tiers() -> None:
+    """ECON-S1 renamed price() -> quote(): the answer is now a dated Quote, not a bare float."""
     gov = Governor()
-    r = CompletionResult(text="x", model="m", prompt_tokens=1000, completion_tokens=1000)
-    assert gov.price("mock", r) == 0.0
-    assert gov.price("deepseek", r) > 0.0
+    free = CompletionResult(text="x", model="mock", prompt_tokens=1000, completion_tokens=1000)
+    paid = CompletionResult(text="x", model="deepseek-chat", prompt_tokens=1000, completion_tokens=1000)
+    assert gov.quote("mock", free).usd_effective == 0.0
+    assert gov.quote("deepseek", paid).usd_effective > 0.0
 
 
 def test_concurrency_semaphore_present_only_when_configured() -> None:

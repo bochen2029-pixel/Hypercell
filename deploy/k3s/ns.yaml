@@ -1,0 +1,21 @@
+# The hypercell namespace and its Pod Security Admission baseline (slice S9.1).
+#
+# The namespace moved out of conductor.yaml so the security posture is declared ONCE, before any
+# workload, and so `kubectl apply -f ns.yaml` is the first step of the day-1 golden path.
+#
+# PSA is set to `restricted` — the strictest built-in profile — because the conductor genuinely
+# runs unprivileged with a read-only root filesystem. Cell pods that need class-3 isolation do NOT
+# relax this: they escalate through a gVisor RuntimeClass (slice S9.2, guard G-GVISOR), never by
+# loosening the namespace. A namespace that permits privileged pods cannot later prove it did not
+# run one.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: hypercell
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+    # audit/warn sit one rung looser so a violating manifest is reported at apply time with a
+    # readable message instead of only a terse admission rejection.
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted

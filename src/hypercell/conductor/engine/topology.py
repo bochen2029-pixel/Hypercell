@@ -12,14 +12,17 @@ from typing import Any
 
 from ...cell.runtime import Cell, build_cell
 from ...cognition.base import Cognition
-from ...cognition.registry import build_cognition
+from ...cognition.metered import MeteredCognition, build_adapter
 from ...common import ids
 from ...common.types import Outcome, ProviderConfig, Role
 from ...medium.bus import open_medium
-from ...medium.transport_local import LocalMedium
-from ..governor import BudgetExceeded, Governor, MeteredCognition
+from ...medium.transport_local import Filter, LocalMedium
+from ..governor import BudgetExceeded, Governor
 from .converge import run_oracle
+from .driver import TOPOLOGIES, Convergence, ScoringEvent
 from .judge import judge_score
+from .packets import build_packet
+from .views import view_for
 
 
 @dataclass
@@ -79,9 +82,10 @@ async def _produce_and_score(
     medium: LocalMedium,
     culture: str,
     judge_ctx: tuple[Cognition, int] | None = None,
+    packet: str = "",
 ) -> Candidate:
     try:
-        code = await cell.produce(goal, peers)
+        code = await cell.produce(goal, peers, packet=packet)
     except BudgetExceeded:
         return Candidate(cell=cell.role.name, round=rnd, path="", score=0.0, outcome=Outcome.invalid)
     rdir = sandbox / f"r{rnd}"
@@ -95,12 +99,26 @@ async def _produce_and_score(
     if judge_ctx is not None:  # open task: an independent judge panel scores it (Externality for prose)
         jcog, judges = judge_ctx
         receipt = await judge_score(jcog, goal=goal, candidate_text=code, judges=judges)
-        medium.post(
-            culture, "judges", "judgment", round=rnd,
-            body={"for": cell.role.name, "score": receipt.score, "evidence": receipt.evidence},
-        )
+        graded_by = f"judge-panel/{judges}"
     else:  # checkable task: the external oracle command scores it
         receipt = run_oracle(oracle_cmd, str(path))
+        graded_by = "oracle-cmd"
+
+    # E2, fixed at M1: the grading lands on the Medium as a registry `receipt`, posted by the
+    # conductor. It used to be an off-registry "judgment" from a cell principal, which meant the
+    # oracle's verdict never reached a constitutional fold at all — every certificate and null
+    # ledger downstream was folding over a log that had no gradings in it.
+    medium.post(
+        culture, "conductor", "receipt", round=rnd,
+        body={
+            "check": "submission",
+            "subject": {"cell": cell.role.name, "round": rnd},
+            "outcome": receipt.outcome.value if hasattr(receipt.outcome, "value") else str(receipt.outcome),
+            "score": receipt.score,
+            "graded_by": graded_by,
+            "evidence": receipt.evidence,
+        },
+    )
     return Candidate(
         cell=cell.role.name, round=rnd, path=str(path), score=receipt.score, outcome=receipt.outcome
     )
@@ -145,7 +163,7 @@ async def run_tournament(
 
     judge_ctx: tuple[Cognition, int] | None = None
     if is_judge:
-        judge_ctx = (build_cognition(ProviderConfig(provider=provider, model=model)), judge)
+        judge_ctx = (build_adapter(ProviderConfig(provider=provider, model=model)), judge)
 
     if cells is None:
         roles = _roster(n, provider, model, base_prompt, diversify)
@@ -158,42 +176,57 @@ async def run_tournament(
 
     champion: Candidate | None = None
     history: list[Candidate] = []
-    stable = 0
     converged = False
+    conv = Convergence(target=target, stable_k=stable_k)
+    _row = TOPOLOGIES["tournament"]
     rounds_run = 0
 
     for rnd in range(1, rounds + 1):
         rounds_run = rnd
         peers: list[str] = []
+        packet_text = ""
         if rnd > 1:
             peers = [
                 s["body"]["code"]
                 for s in medium.submissions(culture, rnd - 1)
                 if s.get("body") and s["body"].get("code")
             ]
+            # The packet is a FOLD over the receipts M1 put on the Medium: nothing new is stored,
+            # and any auditor can run the same fold.
+            prior = medium.read(culture, filt=Filter(types=("receipt",), round=rnd - 1))
+            packet = build_packet(prior, round=rnd - 1)
+            packet_text = "" if packet.empty else packet.render()
         cands: list[Candidate] = list(
             await asyncio.gather(
                 *(
-                    _produce_and_score(c, goal, peers, sandbox, rnd, oracle_cmd, medium, culture, judge_ctx)
-                    for c in cells
+                    _produce_and_score(
+                        c, goal,
+                        # RE-10: a PARTIAL view. Total view is a broadcast — one confident wrong
+                        # answer reached the whole roster in a single round, and every cell was
+                        # anchored on it by the next. Each candidate now reaches at most half.
+                        view_for(i, peers, n=len(cells), round=rnd),
+                        sandbox, rnd, oracle_cmd, medium, culture, judge_ctx,
+                        packet=packet_text,
+                    )
+                    for i, c in enumerate(cells)
                 )
             )
         )
         history.extend(cands)
-        valid = [c for c in cands if c.outcome != Outcome.invalid]  # INVALID excluded (tri-state)
-        round_best = max(valid, key=lambda c: (c.outcome == Outcome.passed, c.score), default=None)
-        prev = (champion.outcome == Outcome.passed, champion.score) if champion else (False, -1.0)
-        if round_best is not None and (round_best.outcome == Outcome.passed, round_best.score) > prev:
-            champion = round_best
-            stable = 0
-        else:
-            stable += 1
-        if (
-            champion is not None
-            and champion.outcome == Outcome.passed  # outcome is authoritative (exit-code, HC-7)
-            and champion.score >= target
-            and stable >= stable_k
-        ):
+        # ONE driver (RE-1): the counting, the champion rule and the predicate live in driver.py.
+        # This used to increment `stable` even when a round produced ZERO valid candidates, so a
+        # broken oracle bought convergence one empty round at a time — F14.
+        conv.observe([ScoringEvent(c.cell, c.outcome, c.score, at=rnd) for c in cands])
+        if conv.champion is not None:
+            # Match on (cell, ROUND). Keying by cell name alone would return that cell's LATEST
+            # candidate, so a champion won in round 1 would report round 3's artifact path — a
+            # certificate pointing at bytes that never won.
+            champion = next(
+                c for c in history if c.cell == conv.champion.who and c.round == conv.champion.at
+            )
+        if conv.converged and champion is not None:
+            # `converged` implies a champion by construction (the predicate requires outcome
+            # `passed`), but narrowing it here keeps that implication CHECKED rather than assumed.
             converged = True
             medium.post(
                 culture, "conductor", "verdict",
@@ -202,7 +235,8 @@ async def run_tournament(
             break
 
     for c in cells:
-        c.nucleus.close()
+        if c.nucleus is not None:   # a d0 cell has no nucleus to close (NUC-9)
+            c.nucleus.close()
     medium.close()
     return TournamentResult(
         run_id=run_id, champion=champion, converged=converged, rounds_run=rounds_run, history=history

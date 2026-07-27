@@ -10,12 +10,15 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from ...cell.runtime import Cell, build_cell
+from ...cognition.metered import MeteredCognition
 from ...common import ids
 from ...common.types import Outcome, ProviderConfig, Role
 from ...medium.bus import open_medium
-from ..governor import BudgetExceeded, Governor, MeteredCognition
+from ..governor import BudgetExceeded, Escrow, Governor
+from ..quote import quote_pull
 from .converge import run_oracle
-from .schedule import Arm, ucb1
+from .driver import TOPOLOGIES, Convergence, ScoringEvent
+from .schedule import Arm, RunBook, charge, dollar_ucb
 from .topology import _ANGLES
 
 
@@ -60,7 +63,24 @@ async def run_drive(
         "You are a cell in a swarm solving a shared goal. Produce ONE solution artifact. "
         "Output ONLY the artifact (for code: the source), with no prose and no markdown fences."
     )
-    gov = Governor(usd_cap=usd_cap, per_provider_concurrency=per_provider_concurrency or {})
+    # ECON-S2: the budget is a DURABLE FLEET escrow, not a per-run RAM counter. Two runs under one
+    # home now share one cap, and a resumed run inherits what it already spent instead of being
+    # handed the whole budget again (the L8 leak, which fails in the generous direction).
+    # S-KG-4: a fresh Governor over this escrow FOLDS its spend from the ledger on construction --
+    # the fresh-instance pattern is now fold-hydration, so a resumed run opens knowing what it
+    # already spent instead of being handed the whole budget again.
+    escrow = Escrow.for_home(home, cap_usd=usd_cap)
+    if escrow.needs_reconcile:
+        escrow.reconcile()
+    # This run's OWN limit is a scope cap; the fleet cap was fixed by whoever opened the home
+    # first. Both bind -- available() takes the minimum over the chain.
+    escrow.scope_caps.setdefault(f"run:{run_id}", usd_cap)
+    gov = Governor(
+        usd_cap=usd_cap,
+        per_provider_concurrency=per_provider_concurrency or {},
+        escrow=escrow,
+        scope=f"run:{run_id}",
+    )
     culture = f"drive-{run_id}"
     medium = open_medium(home)
     sandbox = Path(home) / "_sandbox" / run_id
@@ -83,21 +103,32 @@ async def run_drive(
 
     arms = [Arm(name=c.role.name) for c in cells]
     by_name = {c.role.name: c for c in cells}
+    # ECON-S3: the dollar-UCB's inputs. One quote per arm's lane (drive's default cells share a
+    # lane, so this is often one number fanned out — the index degrades gracefully to score-order
+    # there, which is correct: with equal prices, dollars and pulls agree).
+    e_hat = {
+        c.role.name: quote_pull(
+            gov.book, model=c.role.provider.model, provider=c.role.provider.provider
+        ).usd_expected
+        for c in cells
+    }
+    run_book = RunBook()
     champion_arm: str | None = None
     champion_score = -1.0
-    champion_passed = False
     best_code: dict[str, str] = {}
     history: list[DriveStep] = []
     converged = False
-    stable = 0
+    conv = Convergence(target=target, stable_k=stable_k)
+    _row = TOPOLOGIES["drive"]  # = tournament x {dispatch: ucb}; sugar, not a second engine
     reason = "max-steps"
 
     for step in range(1, max_steps + 1):
-        arm = ucb1(arms)
+        arm = dollar_ucb(arms, e_hat=e_hat, book=run_book)
         if arm is None:
             reason = "no-arms"
             break
         cell = by_name[arm.name]
+        usd_before = gov.spent  # the fold, so the step's cost is a subtraction, not a guess
         try:
             code = await cell.produce(goal, list(best_code.values()))
         except BudgetExceeded:
@@ -111,21 +142,28 @@ async def run_drive(
                     artifact={"path": str(path)})
         receipt = run_oracle(oracle_cmd, str(path))
         arm.visits += 1
+        # R5: the candidate's dollars burn the arm; an INVALID grading is an APPARATUS failure and
+        # books run-level — the arm's standing is untouched by a grader that broke (the tri-state
+        # already excludes INVALID from convergence for the same reason: not evidence either way).
+        step_usd = max(0.0, gov.spent - usd_before)
+        charge(
+            arm, step_usd,
+            attribution="apparatus" if receipt.outcome == Outcome.invalid else "candidate",
+            book=run_book,
+        )
         if receipt.outcome != Outcome.invalid and receipt.score > arm.best:
             arm.best = receipt.score
             best_code[arm.name] = code
         history.append(DriveStep(step=step, arm=arm.name, score=receipt.score, outcome=receipt.outcome))
 
-        # champion selection: outcome is authoritative (exit-code, non-mintable), score is the tiebreak.
-        passed = receipt.outcome == Outcome.passed
-        if receipt.outcome != Outcome.invalid and (passed, receipt.score) > (
-            champion_passed, champion_score
-        ):
-            champion_arm, champion_score, champion_passed = arm.name, receipt.score, passed
-            stable = 0
-        else:
-            stable += 1
-        if champion_passed and champion_score >= target and stable >= stable_k:
+        # ONE driver (RE-1). This used to increment `stable` on an INVALID grading, which the
+        # tri-state EXCLUDES: an error is not evidence in either direction, and letting it accrue
+        # stability meant a failing oracle could converge the run on a stale champion — F14.
+        conv.observe([ScoringEvent(arm.name, receipt.outcome, receipt.score, at=step)])
+        if conv.champion is not None:
+            champion_arm = conv.champion.who
+            champion_score = conv.champion.score
+        if conv.converged:
             converged = True
             reason = "converged"
             medium.post(culture, "conductor", "verdict",
@@ -133,7 +171,8 @@ async def run_drive(
             break
 
     for c in cells:
-        c.nucleus.close()
+        if c.nucleus is not None:   # a d0 cell has no nucleus to close (NUC-9)
+            c.nucleus.close()
     medium.close()
     return DriveResult(
         run_id=run_id, champion_arm=champion_arm, champion_score=max(0.0, champion_score),

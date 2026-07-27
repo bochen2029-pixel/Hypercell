@@ -6,7 +6,7 @@ from typing import Any
 from hypercell.cell.nucleus import Nucleus
 from hypercell.cell.runtime import Cell
 from hypercell.cognition.base import Cognition, CompletionResult, Messages
-from hypercell.common.types import Role
+from hypercell.common.types import ProviderConfig, Role
 from hypercell.conductor.engine.drive import run_drive
 
 ORACLE = "python oracles/ipv4_check.py"
@@ -38,7 +38,12 @@ class StubCognition(Cognition):
 
 
 def _cell(tmp_path: Path, name: str, code: str) -> Cell:
-    return Cell(Role(name=name, prompt="p"), Nucleus(tmp_path, f"d/{name}/0"), StubCognition(code))
+    # The role must declare the lane it ACTUALLY runs on. Before ECON-S1 this fixture left the
+    # default deepseek provider in place while serving a stub, and nothing noticed; the pricebook
+    # now refuses `stub@deepseek/standard` because a role claiming one lane and running another is
+    # a mispriced run waiting to happen.
+    role = Role(name=name, prompt="p", provider=ProviderConfig(provider="stub", model="stub"))
+    return Cell(role, Nucleus(tmp_path, f"d/{name}/0"), StubCognition(code))
 
 
 async def test_drive_converges_on_correct_arm(tmp_path: Path) -> None:
